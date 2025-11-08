@@ -8,25 +8,23 @@ let step = 0;
 let bpm = 120;
 let beatLength;
 let accum = 0;
+let speedSlider;
+let centerVec;
 
-let hihatNoise, kickOsc;
-let pianoOscs = [];
-let bassOscs = [];
+let toneReverb;
+let hihatSynth, kickSynth, pianoSynth, bassSynth;
 let noteFreqs = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88];
 
 let toggles = { hihat: true, bass: true, piano: true, kick: true };
-let audioStarted = false;
+let toneStarted = false;
 
 function setup() {
-  createCanvas(800, 600);
+  const canvas = createCanvas(windowWidth, windowHeight);
+  canvas.parent("canvas-wrapper");
   frameRate(30);
   noStroke();
-createP("Tempo & Motion Speed");
-speedSlider = createSlider(0.5, 2.0, 1.0, 0.01);
-speedSlider.position(600, height + 20);
-// --- Global Reverb ---
-reverb = new p5.Reverb();
-reverb.set(3, 2); // (reverbTime, decayRate) → try (2–5, 1–3)
+  speedSlider = document.getElementById("speed-slider");
+  centerVec = createVector(width / 2, height / 2);
 
   // instrument regions (home zones)
   let homes = {
@@ -41,52 +39,47 @@ reverb.set(3, 2); // (reverbTime, decayRate) → try (2–5, 1–3)
   createInstrumentBoids("piano", 7, homes.piano);
   createInstrumentBoids("kick", 8, homes.kick);
 
-  // sounds
-  hihatNoise = new p5.Noise('white');
-  hihatNoise.amp(0);
-  
-  hihatNoise.start();
+  // Tone.js instruments + FX
+  toneReverb = new Tone.Reverb({ decay: 4, preDelay: 0.03, wet: 0.7 }).toDestination();
 
-  kickOsc = new p5.Oscillator('sine');
-  kickOsc.amp(0);
-  kickOsc.start();
+  hihatSynth = new Tone.NoiseSynth({
+    noise: { type: "white" },
+    envelope: { attack: 0.001, decay: 0.05, sustain: 0.0001, release: 0.02 }
+  }).connect(toneReverb);
+  hihatSynth.volume.value = -12; 
 
-  for (let i = 0; i < 7; i++) {
-    pianoOscs[i] = new p5.Oscillator('triangle');
-    pianoOscs[i].amp(0);
-    
-    pianoOscs[i].start();
-    bassOscs[i] = new p5.Oscillator('pulse');
-    bassOscs[i].amp(0);
-    bassOscs[i].start();
-  }
+  kickSynth = new Tone.MembraneSynth({
+    pitchDecay: 0.05,
+    octaves: 5,
+    envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.3 }
+  }).connect(toneReverb);
+
+  pianoSynth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.005, decay: 0.2, sustain: 0.3, release: 0.5 }
+  }).connect(toneReverb);
+
+  bassSynth = new Tone.PolySynth(Tone.MonoSynth, {
+    oscillator: { type: "square" },
+    filter: { Q: 1, type: "lowpass", rolloff: -24 },
+    envelope: { attack: 0.02, decay: 0.3, sustain: 0.4, release: 0.8 },
+    filterEnvelope: { attack: 0.30, decay: 0.2, sustain: 0.2, release: 0.6, baseFrequency: 100, octaves: 2 }
+  }).connect(toneReverb);
 
   beatLength = 60000 / bpm;
-hihatNoise.disconnect();
-kickOsc.disconnect();
-for (let i = 0; i < 7; i++) {
-  pianoOscs[i].disconnect();
-  bassOscs[i].disconnect();
-  
-}
-hihatNoise.connect(reverb);
-kickOsc.connect(reverb);
-for (let i = 0; i < 7; i++) {
-  pianoOscs[i].connect(reverb);
-  bassOscs[i].connect(reverb);
+
+  initInstrumentButtons();
 }
 
-  // instrument switches
-  createToggleButton("Hi-hat", "hihat", 100);
-  createToggleButton("Bass", "bass", 220);
-  createToggleButton("Piano", "piano", 340);
-  createToggleButton("Kick", "kick", 460);
-}
-
-function createToggleButton(label, type, x) {
-  let btn = createButton(label);
-  btn.position(x, height + 20);
-  btn.mousePressed(() => toggles[type] = !toggles[type]);
+function initInstrumentButtons() {
+  document.querySelectorAll(".instr-btn").forEach(btn => {
+    const type = btn.dataset.type;
+    btn.classList.toggle("off", !toggles[type]);
+    btn.addEventListener("click", () => {
+      toggles[type] = !toggles[type];
+      btn.classList.toggle("off", !toggles[type]);
+    });
+  });
 }
 
 function draw() {
@@ -106,7 +99,7 @@ if (particles.length > 0) {
   background(0);
 }
 // --- Adjust speed based on slider ---
-let speedFactor = speedSlider.value();
+let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
 
 // scale boid motion
@@ -209,13 +202,15 @@ class SoundBoid {
     this.flash = false;
 
     // individual personality
-    this.maxSpeed = random(0.8, 2);
-    this.alignStrength = random(0.8, 1.2);
-    this.cohesionStrength = random(0.5, 1.0);
-    this.separationStrength = random(0.8, 1.5);
+    this.maxSpeed = random(0.9, 2.2);
+    this.alignStrength = random(0.6, 1.0);
+    this.cohesionStrength = random(0.3, 0.7);
+    this.separationStrength = random(1.2, 1.8);
+    this.disperseBias = random(0.015, 0.04);
 
     this.home = home.copy();
     this.noiseSeed = random(1000);
+    this.angle = random(TWO_PI);
   }
 
   update() {
@@ -226,6 +221,11 @@ class SoundBoid {
     this.vel.limit(this.maxSpeed);
     this.pos.add(p5.Vector.mult(this.vel, dt));
     this.acc.mult(0);
+
+    if (this.vel.magSq() > 0.0001) {
+      const targetAngle = this.vel.heading();
+      this.angle = lerpAngle(this.angle, targetAngle, 0.2);
+    }
 
     // wrap edges
     if (this.pos.x < 0) this.pos.x = width;
@@ -239,7 +239,7 @@ class SoundBoid {
   // === MOVEMENT FORCES ===
   // (look here if you want to tune movement behavior)
   flock(others) {
-    let perception = 60;
+    let perception = 70;
     let total = 0;
     let align = createVector();
     let cohesion = createVector();
@@ -260,8 +260,8 @@ class SoundBoid {
     if (total > 0) {
       align.div(total).setMag(this.maxSpeed);
       cohesion.div(total);
-      cohesion.sub(this.pos).setMag(0.05);
-      separation.div(total).setMag(0.5);
+      cohesion.sub(this.pos).setMag(0.03);
+      separation.div(total).setMag(0.7);
     }
 
     // -- Density attraction/repulsion --
@@ -278,9 +278,17 @@ class SoundBoid {
     let drift = p5.Vector.fromAngle(theta).mult(0.05);
     this.applyForce(drift);
 
-    // -- Home attraction --
-    let homeForce = p5.Vector.sub(this.home, this.pos).setMag(0.08);
+    // -- Home attraction (looser)
+    let homeForce = p5.Vector.sub(this.home, this.pos).setMag(0.05);
     this.applyForce(homeForce);
+
+    // -- Dispersal push away from home center --
+    let disperse = p5.Vector.sub(this.pos, this.home).setMag(this.disperseBias);
+    this.applyForce(disperse);
+
+    // -- Gentle push away from stage center to avoid crowding --
+    let fromCenter = p5.Vector.sub(this.pos, centerVec).setMag(0.001);
+    this.applyForce(fromCenter);
 
     // -- Apply main flock forces (smoothed) --
     let totalForce = p5.Vector.add(align.mult(this.alignStrength))
@@ -298,6 +306,7 @@ class SoundBoid {
     fill(c);
     push();
     translate(this.pos.x, this.pos.y);
+    rotate(this.angle + HALF_PI);
     if (this.type === "piano") rectMode(CENTER), rect(0, 0, this.size, this.size);
     else if (this.type === "kick") ellipse(0, 0, this.size);
     else if (this.type === "bass") arc(0, 0, this.size * 1.3, this.size * 1.3, 0, PI, CHORD);
@@ -308,32 +317,25 @@ class SoundBoid {
   toggle() { this.on = !this.on; }
 
   play() {
-    if (!this.on) return;
+    if (!this.on || !toneStarted) return;
     let speed = this.vel.mag();
+    let velocity = constrain(map(speed, 0, 3, 0.2, 0.9), 0.05, 1);
+    let beatSeconds = beatLength / 1000;
 
     if (this.type === "hihat") {
-      hihatNoise.amp(map(speed, 0, 3, 0.05, 0.25), 0.01);
-      setTimeout(() => hihatNoise.amp(0, 0.05), 30);
+      hihatSynth.triggerAttackRelease("16n", undefined, velocity);
     } else if (this.type === "kick") {
       let pitch = map(speed, 0, 3, 50, 80);
-      kickOsc.freq(pitch);
-      kickOsc.amp(0.5, 0.01);
-      setTimeout(() => {
-        kickOsc.freq(30, 0.2);
-        kickOsc.amp(0, 0.3);
-      }, 10);
+      let dur = Math.max(beatSeconds * 0.25, 0.05);
+      kickSynth.triggerAttackRelease(pitch, dur, undefined, velocity);
     } else if (this.type === "piano") {
       let f = noteFreqs[this.col % 7] * map(speed, 0, 3, 0.9, 1.2);
-      let osc = pianoOscs[this.col % 7];
-      osc.freq(f);
-      osc.amp(map(speed, 0, 3, 0.2, 0.4), 0.02);
-      setTimeout(() => osc.amp(0, 0.2), beatLength * 0.5);
+      let dur = Math.max(beatSeconds * 0.5, 0.1);
+      pianoSynth.triggerAttackRelease(f, dur, undefined, velocity);
     } else if (this.type === "bass") {
       let f = (noteFreqs[this.col % 7] / 2) * map(speed, 0, 3, 0.9, 1.1);
-      let osc = bassOscs[this.col % 7];
-      osc.freq(f);
-      osc.amp(map(speed, 0, 3, 0.2, 0.4), 0.05);
-      setTimeout(() => osc.amp(0, 0.4), beatLength * 2);
+      let dur = Math.max(beatSeconds * 2, 0.3);
+      bassSynth.triggerAttackRelease(f, dur, undefined, velocity);
     }
   }
 }
@@ -373,14 +375,24 @@ function complementary(c) {
 }
 
 function startAudioIfNeeded() {
-  if (audioStarted) return;
-  const audioContext = getAudioContext();
-  if (audioContext.state !== "running") {
-    userStartAudio();
-  }
-  audioStarted = audioContext.state === "running";
+  if (toneStarted) return;
+  Tone.start()
+    .then(() => {
+      toneStarted = true;
+    })
+    .catch(err => console.error("Tone start failed", err));
 }
 
 function touchStarted() {
   startAudioIfNeeded();
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  centerVec.set(windowWidth / 2, windowHeight / 2);
+}
+
+function lerpAngle(a, b, t) {
+  const diff = atan2(sin(b - a), cos(b - a));
+  return a + diff * t;
 }
