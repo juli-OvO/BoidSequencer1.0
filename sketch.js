@@ -1,5 +1,5 @@
-// 🌈 Boid Orchestra v3 — Juli + GPT-5
-// deltaTime physics + organic flocking + home zones + drift
+//boids + sequencer
+//interactivity/audio-visual/generative music.   
 
 let boids = [];
 let particles = [];
@@ -10,6 +10,11 @@ let beatLength;
 let accum = 0;
 let speedSlider;
 let centerVec;
+let masterMeter;
+let ampHistory = [];
+const AMP_HISTORY_LEN = 240;
+const SIGNATURE_STEPS = 8;
+let pianoSchedule = [];
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -41,6 +46,8 @@ function setup() {
 
   // Tone.js instruments + FX
   toneReverb = new Tone.Reverb({ decay: 4, preDelay: 0.03, wet: 0.7 }).toDestination();
+  masterMeter = new Tone.Meter({ smoothing: 0.8 });
+  toneReverb.connect(masterMeter);
 
   hihatSynth = new Tone.NoiseSynth({
     noise: { type: "white" },
@@ -55,9 +62,29 @@ function setup() {
   }).connect(toneReverb);
 
   pianoSynth = new Tone.PolySynth(Tone.Synth, {
-    oscillator: { type: "triangle" },
-    envelope: { attack: 0.005, decay: 0.2, sustain: 0.3, release: 0.5 }
-  }).connect(toneReverb);
+    oscillator: {
+      type: "triangle"
+    },
+    envelope: {
+      attack: 0.002,
+      decay: 0.3,
+      sustain: 0.1,
+      release: 1.2
+    },
+    portamento: 0
+  });
+
+  const kalimbaFilter = new Tone.Filter({
+    type: "lowpass",
+    frequency: 1800,
+    rolloff: -12,
+    Q: 2
+  });
+
+  const kalimbaReverb = new Tone.Reverb({ decay: 6, wet: 0.5 });
+
+  pianoSynth.chain(kalimbaFilter, kalimbaReverb, toneReverb);
+  pianoSynth.volume.value = -12;
 
   bassSynth = new Tone.PolySynth(Tone.MonoSynth, {
     oscillator: { type: "square" },
@@ -98,6 +125,9 @@ if (particles.length > 0) {
 } else {
   background(0);
 }
+
+  updateAmplitudeHistory();
+  drawAmplitudeWave();
 // --- Adjust speed based on slider ---
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
@@ -156,11 +186,12 @@ function mousePressed() {
 
 function stepBeat() {
   for (let b of boids) b.flash = false;
+  if (step === 0) rebuildPianoSchedule();
   playInstrument("hihat", 8);
-  playInstrument("piano", 7);
+  playScheduledPiano(step);
   playInstrument("kick", 8);
   if (step === 0) playBassChord();
-  step = (step + 1) % 8;
+  step = (step + 1) % SIGNATURE_STEPS;
 }
 
 function playInstrument(type, numCols) {
@@ -187,6 +218,41 @@ function playBassChord() {
   }
 }
 
+function rebuildPianoSchedule() {
+  pianoSchedule = Array.from({ length: SIGNATURE_STEPS }, () => []);
+  if (!toggles.piano) return;
+  const active = boids.filter(b => b.type === "piano" && b.on);
+  if (!active.length) return;
+
+  for (let b of active) {
+    const baseIndex = b.col % noteFreqs.length;
+    const intervals = [0, 2, 4];
+    for (let interval of intervals) {
+      const idx = (baseIndex + interval) % noteFreqs.length;
+      const freq = noteFreqs[idx] * 2;
+      const slot = floor(random(SIGNATURE_STEPS));
+      pianoSchedule[slot].push({ freq, boid: b });
+    }
+  }
+}
+
+function playScheduledPiano(stepIndex) {
+  if (!toggles.piano || !pianoSchedule.length) return;
+  const bucket = pianoSchedule[stepIndex] || [];
+  if (!bucket.length) return;
+  const dur = Math.max(beatLength / 1000 * 0.75, 0.18);
+
+  bucket.forEach(entry => {
+    pianoSynth.triggerAttackRelease(entry.freq, dur, undefined, 0.55);
+    if (entry.boid) {
+      entry.boid.flash = true;
+      particles.push(new Particle(entry.boid.pos.copy(), entry.boid.baseColor));
+    }
+  });
+
+  bucket.length = 0;
+}
+
 
 // ---- CLASS: SoundBoid ----
 class SoundBoid {
@@ -196,17 +262,17 @@ class SoundBoid {
     this.acc = createVector();
     this.type = type;
     this.col = col;
-    this.size = 35;
+    this.size = 50;
     this.baseColor = baseColor;
     this.on = random() < 0.4;
     this.flash = false;
 
     // individual personality
     this.maxSpeed = random(0.9, 2.2);
-    this.alignStrength = random(0.6, 1.0);
-    this.cohesionStrength = random(0.3, 0.7);
-    this.separationStrength = random(1.2, 1.8);
-    this.disperseBias = random(0.015, 0.04);
+    this.alignStrength = random(0.75, 1.1);
+    this.cohesionStrength = random(0.5, 0.9);
+    this.separationStrength = random(0.6, 1.1);
+    this.disperseBias = random(0.004, 0.015);
 
     this.home = home.copy();
     this.noiseSeed = random(1000);
@@ -234,74 +300,82 @@ class SoundBoid {
     if (this.pos.y > height) this.pos.y = 0;
   }
 
-  applyForce(f) { this.acc.add(f); }
-
   // === MOVEMENT FORCES ===
-  // (look here if you want to tune movement behavior)
+  // keeps instruments clustered but fluid
   flock(others) {
-    let perception = 70;
-    let total = 0;
-    let align = createVector();
-    let cohesion = createVector();
-    let separation = createVector();
+    const perception = 80;
+    const neighbors = this.computeNeighborhood(others, perception);
+    const envForce = this.environmentalForces(neighbors.count);
+
+    let flockForce = createVector();
+    if (neighbors.count > 0) {
+      neighbors.align.div(neighbors.count).setMag(this.maxSpeed);
+      neighbors.cohesion.div(neighbors.count).sub(this.pos).setMag(0.05);
+      neighbors.separation.div(neighbors.count).setMag(0.35);
+
+      flockForce = p5.Vector.add(neighbors.align.mult(this.alignStrength))
+        .add(neighbors.cohesion.mult(this.cohesionStrength))
+        .add(neighbors.separation.mult(this.separationStrength));
+    }
+
+    this.acc.lerp(flockForce.add(envForce), 0.12);
+  }
+
+  computeNeighborhood(others, perception) {
+    let data = {
+      count: 0,
+      align: createVector(),
+      cohesion: createVector(),
+      separation: createVector()
+    };
 
     for (let other of others) {
+      if (other === this) continue;
       let d = dist(this.pos.x, this.pos.y, other.pos.x, other.pos.y);
-      if (other != this && d < perception) {
-        align.add(other.vel);
-        cohesion.add(other.pos);
+      if (d < perception) {
+        data.align.add(other.vel);
+        data.cohesion.add(other.pos);
         let diff = p5.Vector.sub(this.pos, other.pos);
-        diff.div(d * d);
-        separation.add(diff);
-        total++;
+        diff.div(Math.max(d * d, 0.001));
+        data.separation.add(diff);
+        data.count++;
       }
     }
 
-    if (total > 0) {
-      align.div(total).setMag(this.maxSpeed);
-      cohesion.div(total);
-      cohesion.sub(this.pos).setMag(0.03);
-      separation.div(total).setMag(0.7);
+    return data;
+  }
+
+  environmentalForces(neighborCount) {
+    let force = createVector();
+    let density = neighborCount / 8.0;
+
+    let homeMag = density < 0.3 ? 0.055 : 0.04;
+    force.add(p5.Vector.sub(this.home, this.pos).setMag(homeMag));
+
+    if (density > 0.85) {
+      force.add(p5.Vector.random2D().mult(0.12));
     }
 
-    // -- Density attraction/repulsion --
-    let density = total / 10.0;
-    if (density < 0.3) {
-      let toHome = p5.Vector.sub(this.home, this.pos).setMag(0.02);
-      this.applyForce(toHome);
-    } else if (density > 0.7) {
-      this.applyForce(p5.Vector.random2D().mult(0.3));
-    }
+    let theta = noise(this.noiseSeed + millis() * 0.00025) * TWO_PI;
+    force.add(p5.Vector.fromAngle(theta).mult(0.025));
 
-    // -- Noise drift (Perlin air currents) --
-    let theta = noise(this.noiseSeed + millis() * 0.0003) * TWO_PI;
-    let drift = p5.Vector.fromAngle(theta).mult(0.05);
-    this.applyForce(drift);
+    force.add(p5.Vector.sub(this.pos, this.home).setMag(this.disperseBias));
+    force.add(p5.Vector.sub(this.pos, centerVec).setMag(0.003));
 
-    // -- Home attraction (looser)
-    let homeForce = p5.Vector.sub(this.home, this.pos).setMag(0.05);
-    this.applyForce(homeForce);
-
-    // -- Dispersal push away from home center --
-    let disperse = p5.Vector.sub(this.pos, this.home).setMag(this.disperseBias);
-    this.applyForce(disperse);
-
-    // -- Gentle push away from stage center to avoid crowding --
-    let fromCenter = p5.Vector.sub(this.pos, centerVec).setMag(0.001);
-    this.applyForce(fromCenter);
-
-    // -- Apply main flock forces (smoothed) --
-    let totalForce = p5.Vector.add(align.mult(this.alignStrength))
-      .add(cohesion.mult(this.cohesionStrength))
-      .add(separation.mult(this.separationStrength));
-    this.acc.lerp(totalForce, 0.1);
+    return force;
   }
 
   display() {
     let c;
-    if (!this.on) c = color(220);
-    else if (this.flash) c = complementary(this.baseColor);
-    else c = this.baseColor;
+    if (this.type === "bass") {
+      if (!this.on) c = color(255);
+      else if (this.flash) c = complementary(this.baseColor);
+      else c = color(0);
+    } else {
+      if (!this.on) c = color(220);
+      else if (this.flash) c = complementary(this.baseColor);
+      else c = this.baseColor;
+    }
 
     fill(c);
     push();
@@ -329,9 +403,7 @@ class SoundBoid {
       let dur = Math.max(beatSeconds * 0.25, 0.05);
       kickSynth.triggerAttackRelease(pitch, dur, undefined, velocity);
     } else if (this.type === "piano") {
-      let f = noteFreqs[this.col % 7] * map(speed, 0, 3, 0.9, 1.2);
-      let dur = Math.max(beatSeconds * 0.5, 0.1);
-      pianoSynth.triggerAttackRelease(f, dur, undefined, velocity);
+      return; // handled globally in playPianoChord
     } else if (this.type === "bass") {
       let f = (noteFreqs[this.col % 7] / 2) * map(speed, 0, 3, 0.9, 1.1);
       let dur = Math.max(beatSeconds * 2, 0.3);
@@ -360,15 +432,80 @@ class Particle {
   }
 }
 
+function updateAmplitudeHistory() {
+  if (!masterMeter) return;
+  let level = masterMeter.getValue();
+  if (!isFinite(level)) level = -Infinity;
+  let normalized = map(level, -60, 0, 0, 1);
+  normalized = constrain(normalized, 0, 1);
+  ampHistory.push(normalized);
+  if (ampHistory.length > AMP_HISTORY_LEN) ampHistory.shift();
+}
+
+function drawAmplitudeWave() {
+  if (ampHistory.length < 2) return;
+  push();
+  noFill();
+  let centerY = height / 2;
+  strokeWeight(2);
+
+  stroke(255, 90);
+  beginShape();
+  for (let i = 0; i < ampHistory.length; i++) {
+    let x = map(i, 0, ampHistory.length - 1, 0, width);
+    let amp = ampHistory[i];
+    let wobble = sin(frameCount * 0.015 + i * 0.12) * 8;
+    let displacement = (amp - 0.2) * 140;
+    vertex(x, centerY - displacement + wobble);
+  }
+  endShape();
+
+  stroke(255, 60);
+  beginShape();
+  for (let i = 0; i < ampHistory.length; i++) {
+    let x = map(i, 0, ampHistory.length - 1, 0, width);
+    let amp = ampHistory[i];
+    let wobble = sin(frameCount * 0.015 + i * 0.12 + PI) * 8;
+    let displacement = (amp - 0.2) * 140;
+    vertex(x, centerY + displacement - wobble);
+  }
+  endShape();
+  pop();
+}
+
 // ---- HELPERS ----
 function createInstrumentBoids(type, numCols, home) {
   for (let i = 0; i < numCols; i++) {
-    boids.push(new SoundBoid(random(width), random(height), type, i, randomColor(), home));
+    boids.push(new SoundBoid(random(width), random(height), type, i, randomInstrumentColor(type), home));
   }
 }
 
-function randomColor() {
-  return color(random(50, 255), random(50, 255), random(50, 255));
+function randomInstrumentColor(type) {
+  colorMode(HSB, 360, 100, 100, 100);
+  let hueCenter;
+  let saturation = random(60, 80);
+  let brightness = random(45, 60);
+
+  if (type === "piano") hueCenter = 55;       // yellow
+  else if (type === "kick") hueCenter = 185;  // cyan
+  else if (type === "hihat") hueCenter = 305; // magenta
+  else if (type === "bass") {
+    let white = color(0, 0, 95);
+    colorMode(RGB, 255);
+    return white;
+  } else hueCenter = random(0, 360);
+
+  let hue = (hueCenter + random(-15, 15) + 360) % 360;
+  let c = color(hue, saturation, brightness);
+  colorMode(RGB, 255);
+  return c;
+}
+
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = floor(random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
 }
 function complementary(c) {
   return color(255 - red(c), 255 - green(c), 255 - blue(c));
@@ -396,3 +533,10 @@ function lerpAngle(a, b, t) {
   const diff = atan2(sin(b - a), cos(b - a));
   return a + diff * t;
 }
+
+window.addEventListener("click", async () => {
+  if (Tone.context.state !== "running") {
+    await Tone.start();
+    console.log("🔊 AudioContext started!");
+  }
+}, { once: true });
