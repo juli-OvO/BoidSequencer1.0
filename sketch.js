@@ -15,6 +15,12 @@ let ampHistory = [];
 const AMP_HISTORY_LEN = 240;
 const SIGNATURE_STEPS = 8;
 let pianoSchedule = [];
+let currentPianoPlaying = [];
+let currentKickPlaying = [];
+let currentHihatPlaying = [];
+let currentBassPlaying = [];
+let overlayEnabled = true;
+let linkEnabled = true;
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -30,6 +36,7 @@ function setup() {
   noStroke();
   speedSlider = document.getElementById("speed-slider");
   centerVec = createVector(width / 2, height / 2);
+  setupToggles();
 
   // instrument regions (home zones)
   let homes = {
@@ -109,6 +116,23 @@ function initInstrumentButtons() {
   });
 }
 
+function setupToggles() {
+  const overlayBtn = document.getElementById("overlay-toggle");
+  const lineBtn = document.getElementById("line-toggle");
+  if (overlayBtn) {
+    overlayBtn.addEventListener("click", () => {
+      overlayEnabled = !overlayEnabled;
+      overlayBtn.classList.toggle("off", !overlayEnabled);
+    });
+  }
+  if (lineBtn) {
+    lineBtn.addEventListener("click", () => {
+      linkEnabled = !linkEnabled;
+      lineBtn.classList.toggle("off", !linkEnabled);
+    });
+  }
+}
+
 function draw() {
   // --- Dynamic background based on particle colors ---
 if (particles.length > 0) {
@@ -128,6 +152,7 @@ if (particles.length > 0) {
 
   updateAmplitudeHistory();
   drawAmplitudeWave();
+  if (overlayEnabled) drawInstrumentOverlay();
 // --- Adjust speed based on slider ---
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
@@ -144,6 +169,11 @@ for (let b of boids) {
     b.flock(boids.filter(o => o.type === b.type));
     b.update();
     b.display();
+  }
+
+  if (linkEnabled) {
+    drawPianoKickLines();
+    drawInstrumentLinks();
   }
 
   // update/draw particles
@@ -186,6 +216,10 @@ function mousePressed() {
 
 function stepBeat() {
   for (let b of boids) b.flash = false;
+  currentPianoPlaying = [];
+  currentKickPlaying = [];
+  currentHihatPlaying = [];
+  currentBassPlaying = [];
   if (step === 0) rebuildPianoSchedule();
   playInstrument("hihat", 8);
   playScheduledPiano(step);
@@ -203,6 +237,9 @@ function playInstrument(type, numCols) {
       b.play();
       b.flash = true;
       for (let i = 0; i < 5; i++) particles.push(new Particle(b.pos.copy(), b.baseColor));
+      if (type === "kick") currentKickPlaying.push(b);
+      if (type === "hihat") currentHihatPlaying.push(b);
+      if (type === "bass") currentBassPlaying.push(b);
     }
   }
 }
@@ -245,6 +282,7 @@ function playScheduledPiano(stepIndex) {
   bucket.forEach(entry => {
     pianoSynth.triggerAttackRelease(entry.freq, dur, undefined, 0.55);
     if (entry.boid) {
+      currentPianoPlaying.push(entry.boid);
       entry.boid.flash = true;
       particles.push(new Particle(entry.boid.pos.copy(), entry.boid.baseColor));
     }
@@ -366,25 +404,12 @@ class SoundBoid {
   }
 
   display() {
-    let c;
-    if (this.type === "bass") {
-      if (!this.on) c = color(255);
-      else if (this.flash) c = complementary(this.baseColor);
-      else c = color(0);
-    } else {
-      if (!this.on) c = color(220);
-      else if (this.flash) c = complementary(this.baseColor);
-      else c = this.baseColor;
-    }
-
+    const c = getBoidColor(this);
     fill(c);
     push();
     translate(this.pos.x, this.pos.y);
     rotate(this.angle + HALF_PI);
-    if (this.type === "piano") rectMode(CENTER), rect(0, 0, this.size, this.size);
-    else if (this.type === "kick") ellipse(0, 0, this.size);
-    else if (this.type === "bass") arc(0, 0, this.size * 1.3, this.size * 1.3, 0, PI, CHORD);
-    else if (this.type === "hihat") triangle(-this.size / 2, this.size / 2, 0, -this.size / 2, this.size / 2, this.size / 2);
+    drawBoidShape(this.type, this.size);
     pop();
   }
 
@@ -507,6 +532,137 @@ function shuffleArray(arr) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
 }
+
+function getBoidColor(b) {
+  if (b.type === "bass") {
+    if (!b.on) return color(255);
+    if (b.flash) return complementary(b.baseColor);
+    return color(0);
+  }
+  if (!b.on) return color(220);
+  if (b.flash) return complementary(b.baseColor);
+  return b.baseColor;
+}
+
+function drawBoidShape(type, size) {
+  if (type === "piano") {
+    rectMode(CENTER);
+    rect(0, 0, size, size, size * 0.1);
+    rectMode(CORNER);
+  } else if (type === "kick") {
+    ellipse(0, 0, size);
+  } else if (type === "bass") {
+    beginShape();
+    for (let i = 0; i < 6; i++) {
+      const angle = TWO_PI / 6 * i;
+      vertex(cos(angle) * size * 0.65, sin(angle) * size * 0.65);
+    }
+    endShape(CLOSE);
+  } else if (type === "hihat") {
+    triangle(-size / 2, size / 2, 0, -size / 2, size / 2, size / 2);
+  }
+}
+
+function getBoidsByType(type) {
+  return boids.filter(b => b.type === type).sort((a, b) => a.col - b.col);
+}
+
+function drawInstrumentOverlay() {
+  push();
+  noStroke();
+
+  const hihatList = getBoidsByType("hihat");
+  const kickList = getBoidsByType("kick");
+  const pianoList = getBoidsByType("piano");
+  const bassList = getBoidsByType("bass");
+
+  const rowAlpha = 50;
+
+  const columnWidth = width * 0.12;
+  const leftX = columnWidth / 2;
+  const rightX = width - columnWidth / 2;
+  drawVerticalStrip(pianoList, leftX, 0, height, rowAlpha, columnWidth);
+  drawVerticalStrip(bassList, rightX, 0, height, rowAlpha, columnWidth);
+
+  const horizontalStart = columnWidth;
+  const horizontalWidth = width - columnWidth * 2;
+  const topY = 80;
+  const bottomY = height - 80;
+  drawHorizontalStrip(hihatList, topY, horizontalWidth, horizontalStart, rowAlpha);
+  drawHorizontalStrip(kickList, bottomY, horizontalWidth, horizontalStart, rowAlpha);
+
+  pop();
+}
+
+function drawHorizontalStrip(list, centerY, totalWidth, startX, alpha) {
+  const count = list.length;
+  if (!count) return;
+  const cellW = totalWidth / count;
+  for (let i = 0; i < count; i++) {
+    const b = list[i];
+    if (!b) continue;
+    const x = startX + i * cellW + cellW / 2;
+    const size = cellW * 0.9;
+    const c = getBoidColor(b);
+    fill(red(c), green(c), blue(c), alpha);
+    push();
+    translate(x, centerY);
+    drawBoidShape(b.type, size);
+    pop();
+  }
+}
+
+function drawVerticalStrip(list, centerX, topY, bottomY, alpha, maxWidth) {
+  const count = list.length;
+  if (!count) return;
+  const totalHeight = bottomY - topY;
+  if (totalHeight <= 0) return;
+  const cellH = totalHeight / count;
+  for (let i = 0; i < count; i++) {
+    const b = list[i];
+    if (!b) continue;
+    const y = topY + i * cellH + cellH / 2;
+    const size = Math.min(cellH, maxWidth) * 0.95;
+    const c = getBoidColor(b);
+    fill(red(c), green(c), blue(c), alpha);
+    push();
+    translate(centerX, y);
+    drawBoidShape(b.type, size);
+    pop();
+  }
+}
+
+function drawPianoKickLines() {
+  if (!currentPianoPlaying.length || !currentKickPlaying.length) return;
+  push();
+  stroke(255, 220, 200, 90);
+  strokeWeight(1.5);
+  for (let p of currentPianoPlaying) {
+    for (let k of currentKickPlaying) {
+      line(p.pos.x, p.pos.y, k.pos.x, k.pos.y);
+    }
+  }
+  pop();
+}
+
+function drawInstrumentLinks() {
+  drawLinksBetween(currentHihatPlaying, currentKickPlaying, color(255, 200, 200, 70));
+  drawLinksBetween(currentPianoPlaying, currentBassPlaying, color(200, 255, 255, 70));
+}
+
+function drawLinksBetween(groupA, groupB, strokeColor) {
+  if (!groupA.length || !groupB.length) return;
+  push();
+  stroke(strokeColor);
+  strokeWeight(1);
+  for (let a of groupA) {
+    for (let b of groupB) {
+      line(a.pos.x, a.pos.y, b.pos.x, b.pos.y);
+    }
+  }
+  pop();
+}
+
 function complementary(c) {
   return color(255 - red(c), 255 - green(c), 255 - blue(c));
 }
