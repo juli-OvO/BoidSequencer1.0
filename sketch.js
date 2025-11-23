@@ -25,20 +25,26 @@ let overlayEnabled = true;
 let linkEnabled = true;
 let trackingEnabled = true;
 let glowEnabled = true;
+let glowStates = [];
+let uiCanvas, uiCtx;
+let bubbleSynth, bubbleLoop, bubbleDelay;
+let bassChorus;
+let choirSynth;
+let droneTestSynth, droneTestChorus;
 const LED_PIXEL_SIZE = 6;
 let ledBuffer;
 let mainCanvas;
 
 const PIXEL_PATTERNS = {
   piano: [
-    "00111100",
-    "01111110",
-    "11111111",
-    "11100111",
     "11111111",
     "11111111",
-    "01111110",
-    "00111100"
+    "11111111",
+    "11111111",
+    "11111111",
+    "11111111",
+    "11111111",
+    "11111111"
   ],
   kick: [
     "00011000",
@@ -62,13 +68,13 @@ const PIXEL_PATTERNS = {
   ],
   hihat: [
     "00001000",
+    "00001000",
     "00011100",
-    "00111110",
-    "01111111",
+    "00111100",
+    "01111110",
     "11111111",
-    "00111110",
-    "00111110",
-    "00111110"
+    "11111111",
+    "11111111"
   ],
   default: [
     "001100",
@@ -99,6 +105,7 @@ function setup() {
   speedSlider = document.getElementById("speed-slider");
   centerVec = createVector(width / 2, height / 2);
   ensureLedBuffer();
+  setupUiCanvas();
   setupToggles();
 
   // instrument regions (home zones)
@@ -118,6 +125,25 @@ function setup() {
   toneReverb = new Tone.Reverb({ decay: 4, preDelay: 0.03, wet: 0.7 }).toDestination();
   masterMeter = new Tone.Meter({ smoothing: 0.8 });
   toneReverb.connect(masterMeter);
+  bubbleDelay = new Tone.FeedbackDelay({ delayTime: "8n", feedback: 0.45, wet: 0.55 }).connect(toneReverb);
+  bubbleSynth = new Tone.PluckSynth({
+    attackNoise: 0.8,
+    dampening: 4800,
+    resonance: 0.96
+  }).connect(bubbleDelay);
+  const choirVerb = new Tone.Reverb({ decay: 7, wet: 0.5 }).toDestination();
+  choirSynth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: "triangle" },
+    envelope: { attack: 1, sustain: 0.8, release: 4 }
+  }).connect(choirVerb);
+  choirSynth.volume.value = -12; // tame choir level
+  droneTestChorus = new Tone.Chorus(0.8, 2.5, 0.3).toDestination();
+  droneTestChorus.start();
+  droneTestSynth = new Tone.MonoSynth({
+    oscillator: { type: "sine" },
+    filter: { type: "lowpass", frequency: 400 },
+    envelope: { attack: 2, decay: 1, sustain: 1, release: 4 }
+  }).connect(droneTestChorus);
 
   hihatSynth = new Tone.NoiseSynth({
     noise: { type: "white" },
@@ -156,12 +182,13 @@ function setup() {
   pianoSynth.chain(kalimbaFilter, kalimbaReverb, toneReverb);
   pianoSynth.volume.value = -12;
 
+  bassChorus = new Tone.Chorus(0.8, 2.5, 0.3).connect(toneReverb);
+  bassChorus.start();
   bassSynth = new Tone.PolySynth(Tone.MonoSynth, {
-    oscillator: { type: "square" },
-    filter: { Q: 1, type: "lowpass", rolloff: -24 },
-    envelope: { attack: 0.02, decay: 0.3, sustain: 0.4, release: 0.8 },
-    filterEnvelope: { attack: 0.30, decay: 0.2, sustain: 0.2, release: 0.6, baseFrequency: 100, octaves: 2 }
-  }).connect(toneReverb);
+    oscillator: { type: "sine" },
+    filter: { type: "lowpass", frequency: 400 },
+    envelope: { attack: 0.35, decay: 1, sustain: 0.9, release: 2.5 }
+  }).connect(bassChorus);
 
   beatLength = 60000 / bpm;
 
@@ -184,6 +211,8 @@ function setupToggles() {
   const lineBtn = document.getElementById("line-toggle");
   const trackingBtn = document.getElementById("tracking-toggle");
   const glowBtn = document.getElementById("glow-toggle");
+  const choirBtn = document.getElementById("choir-test");
+  const droneBtn = document.getElementById("drone-test");
   if (overlayBtn) {
     overlayBtn.addEventListener("click", () => {
       overlayEnabled = !overlayEnabled;
@@ -206,6 +235,18 @@ function setupToggles() {
     glowBtn.addEventListener("click", () => {
       glowEnabled = !glowEnabled;
       glowBtn.classList.toggle("off", !glowEnabled);
+    });
+  }
+  if (choirBtn) {
+    choirBtn.addEventListener("click", () => {
+      startAudioIfNeeded();
+      testChoir();
+    });
+  }
+  if (droneBtn) {
+    droneBtn.addEventListener("click", () => {
+      startAudioIfNeeded();
+      testDrone();
     });
   }
 }
@@ -249,8 +290,15 @@ for (let b of boids) {
     b.update();
   }
 
-  const mixedClusters = glowEnabled ? detectMixedClusters() : [];
-  if (glowEnabled) drawClusterHalos(mixedClusters);
+  if (glowEnabled) {
+    const mixedClusters = detectMixedClusters();
+    updateGlowStates(mixedClusters);
+    drawClusterHalos(glowStates);
+    updateClusterSound(glowStates);
+  } else {
+    glowStates = [];
+    updateClusterSound([]);
+  }
 
   // draw boids
   for (let b of boids) {
@@ -280,8 +328,8 @@ for (let b of boids) {
 
   renderLedScreen();
 
-  // crisp overlay (not downsampled) for link UI
-  if (trackingEnabled) drawVectorLinkOverlay();
+  // crisp overlay (separate canvas) for link UI
+  renderUiOverlay();
 }
 
 function keyPressed() {
@@ -565,11 +613,11 @@ function drawAmplitudeWave() {
   if (ampHistory.length < 2) return;
   push();
   noFill();
-  const rowCount = 4;
-  const rowSpacing = height * 0.12;
+  const rowCount = 3;
+  const rowSpacing = height * 0.08;
   const startY = height / 2 - rowSpacing * (rowCount - 1) / 2;
   for (let r = 0; r < rowCount; r++) {
-    const alpha = map(r, 0, rowCount - 1, 60, 120);
+    const alpha = map(r, 0, rowCount - 1, 70, 140);
     drawWaveRow(startY + r * rowSpacing, color(255, alpha));
   }
   pop();
@@ -583,14 +631,14 @@ function drawWaveRow(centerY, strokeCol) {
     const x2 = map(i + 1, 0, len - 1, 0, width);
     const amp1 = ampHistory[i];
     const amp2 = ampHistory[i + 1];
-    const wobble1 = sin(frameCount * 0.015 + i * 0.12) * 8;
-    const wobble2 = sin(frameCount * 0.015 + (i + 1) * 0.12) * 8;
-    const displacement1 = (amp1 - 0.2) * 140;
-    const displacement2 = (amp2 - 0.2) * 140;
+    const wobble1 = sin(frameCount * 0.012 + i * 0.1) * 5;
+    const wobble2 = sin(frameCount * 0.012 + (i + 1) * 0.1) * 5;
+    const displacement1 = (amp1 - 0.15) * 90;
+    const displacement2 = (amp2 - 0.15) * 90;
     const y1 = centerY + displacement1 + wobble1;
     const y2 = centerY + displacement2 + wobble2;
     const avgAmp = (amp1 + amp2) * 0.5;
-    const thickness = map(avgAmp, 0, 1, 1, 10) * (1 + pitchEnergy * 2);
+    const thickness = map(avgAmp, 0, 1, 1.5, 14) * (1 + pitchEnergy * 1.5);
     strokeWeight(thickness);
     line(x1, y1, x2, y2);
   }
@@ -854,6 +902,143 @@ function boidBoxSize(boid) {
   return (boid?.size || 50) * 1.15;
 }
 
+function setupUiCanvas() {
+  const wrapper = document.getElementById("canvas-wrapper");
+  if (!wrapper) return;
+  uiCanvas = document.createElement("canvas");
+  uiCanvas.className = "ui-overlay";
+  uiCanvas.width = windowWidth;
+  uiCanvas.height = windowHeight;
+  uiCanvas.style.position = "fixed";
+  uiCanvas.style.inset = "0";
+  uiCanvas.style.pointerEvents = "none";
+  uiCanvas.style.zIndex = "12";
+  uiCanvas.style.imageRendering = "auto";
+  uiCanvas.style.width = "100%";
+  uiCanvas.style.height = "100%";
+  wrapper.appendChild(uiCanvas);
+  uiCtx = uiCanvas.getContext("2d");
+  if (uiCtx) {
+    uiCtx.lineCap = "round";
+    uiCtx.lineJoin = "round";
+    uiCtx.font = '12px "Courier New", monospace';
+    uiCtx.textBaseline = "middle";
+  }
+}
+
+function resizeUiCanvas() {
+  if (!uiCanvas) return;
+  uiCanvas.width = windowWidth;
+  uiCanvas.height = windowHeight;
+}
+
+function renderUiOverlay() {
+  if (!uiCtx || !uiCanvas) return;
+  uiCtx.clearRect(0, 0, uiCanvas.width, uiCanvas.height);
+  if (!trackingEnabled) return;
+
+  const pairs = [];
+  const activeBoids = new Set();
+  const addPairs = (groupA, groupB, strokeCol) => {
+    if (!groupA.length || !groupB.length) return;
+    for (let a of groupA) {
+      for (let b of groupB) {
+        pairs.push({ a, b, strokeCol });
+        activeBoids.add(a);
+        activeBoids.add(b);
+      }
+    }
+  };
+
+  addPairs(currentPianoPlaying, currentKickPlaying, color(255, 220, 200, 200));
+  addPairs(currentHihatPlaying, currentKickPlaying, color(255, 200, 200, 180));
+  addPairs(currentPianoPlaying, currentBassPlaying, color(190, 240, 255, 190));
+
+  if (linkEnabled) {
+    pairs.forEach(pair => drawUiLinkWithDistance(pair, uiCtx));
+  }
+  activeBoids.forEach(b => drawUiTrackingBox(b, uiCtx));
+}
+
+function drawUiLinkWithDistance(pair, ctx) {
+  const { a, b, strokeCol } = pair;
+  if (!a || !b) return;
+  const dir = p5.Vector.sub(b.pos, a.pos);
+  const baseDist = dir.mag();
+  if (baseDist < 1) return;
+  dir.normalize();
+
+  const start = p5.Vector.add(a.pos, p5.Vector.mult(dir, boidBoxSize(a) / 2));
+  const end = p5.Vector.sub(b.pos, p5.Vector.mult(dir, boidBoxSize(b) / 2));
+
+  ctx.strokeStyle = colorToRgba(strokeCol, alphaFromColor(strokeCol));
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+
+  const mid = p5.Vector.add(start, p5.Vector.mult(p5.Vector.sub(end, start), 0.5));
+  drawUiDistanceLabel(mid, `${floor(baseDist)}`, strokeCol, ctx);
+}
+
+function drawUiTrackingBox(boid, ctx) {
+  const size = boidBoxSize(boid);
+  const accent = complementary(boid.baseColor);
+  const label = instrumentLabel(boid.type);
+
+  ctx.strokeStyle = colorToRgba(accent, 0.94);
+  ctx.lineWidth = 2.5;
+  ctx.fillStyle = "transparent";
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(boid.pos.x - size / 2, boid.pos.y - size / 2, size, size, 6);
+    ctx.stroke();
+  } else {
+    ctx.strokeRect(boid.pos.x - size / 2, boid.pos.y - size / 2, size, size);
+  }
+
+  const labelX = boid.pos.x + size / 2 + 12;
+  const labelY = boid.pos.y - size / 2 - 6;
+  const padding = 4;
+  const textW = ctx.measureText(label).width;
+
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(labelX - padding, labelY - 10, textW + padding * 2, 18, 3);
+    ctx.fill();
+  } else {
+    ctx.fillRect(labelX - padding, labelY - 10, textW + padding * 2, 18);
+  }
+
+  ctx.fillStyle = colorToRgba(accent, 0.9);
+  ctx.textAlign = "left";
+  ctx.fillText(label, labelX, labelY - 1);
+}
+
+function drawUiDistanceLabel(pos, textStr, col, ctx) {
+  const padding = 5;
+  const txtW = ctx.measureText(textStr).width;
+
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(pos.x - (txtW + padding * 2) / 2, pos.y - 8, txtW + padding * 2, 16, 3);
+    ctx.fill();
+  } else {
+    ctx.fillRect(pos.x - (txtW + padding * 2) / 2, pos.y - 8, txtW + padding * 2, 16);
+  }
+
+  ctx.fillStyle = colorToRgba(col, 0.9);
+  ctx.textAlign = "center";
+  ctx.fillText(textStr, pos.x, pos.y + 1);
+}
+
+function alphaFromColor(col) {
+  return alpha(col) / 255;
+}
+
 function detectMixedClusters() {
   const active = boids.filter(b => toggles[b.type]);
   const perceptionRadius = 160;
@@ -911,33 +1096,116 @@ function detectMixedClusters() {
   return merged;
 }
 
+function updateGlowStates(clusters) {
+  // mark existing as inactive before matching
+  glowStates.forEach(g => (g.active = false));
+
+  const matchThresholdFactor = 0.65;
+  clusters.forEach(c => {
+    let match = null;
+    for (let g of glowStates) {
+      const d = dist(c.x, c.y, g.x, g.y);
+      const threshold = (c.radius + g.radius) * matchThresholdFactor * 0.5;
+      if (d < threshold) {
+        match = g;
+        break;
+      }
+    }
+
+    if (match) {
+      match.x = lerp(match.x, c.x, 0.2);
+      match.y = lerp(match.y, c.y, 0.2);
+      match.radius = lerp(match.radius, c.radius, 0.25);
+      match.alpha = min(1, match.alpha + 0.12);
+      match.active = true;
+    } else {
+      glowStates.push({
+        x: c.x,
+        y: c.y,
+        radius: c.radius,
+        alpha: 0,
+        active: true
+      });
+    }
+  });
+
+  // fade out inactive glows
+  glowStates.forEach(g => {
+    if (!g.active) g.alpha -= 0.05;
+    else g.alpha = min(1, g.alpha + 0.02);
+  });
+
+  glowStates = glowStates.filter(g => g.alpha > 0.01);
+}
+
 function drawClusterHalos(clusters) {
   if (!clusters.length) return;
   push();
-  drawingContext.save();
-  drawingContext.globalCompositeOperation = "lighter";
-
   clusters.forEach(cluster => {
+    if (cluster.alpha <= 0.01) return;
     const bgColor = getCanvasColorAt(cluster.x, cluster.y);
     const opposite = complementary(bgColor);
-    const innerR = cluster.radius * 0.45;
-    const outerR = cluster.radius;
+    const size = cluster.radius * 2.2;
+    const half = size / 2;
+    const strokeA = 0.8 * cluster.alpha;
 
-    const glow = drawingContext.createRadialGradient(
-      cluster.x, cluster.y, innerR * 0.3,
-      cluster.x, cluster.y, outerR
-    );
-    glow.addColorStop(0, colorToRgba(opposite, 0.55));
-    glow.addColorStop(0.6, colorToRgba(opposite, 0.28));
-    glow.addColorStop(1, colorToRgba(opposite, 0));
-    drawingContext.fillStyle = glow;
+    // crisp outline using vector context
+    drawingContext.save();
+    drawingContext.setTransform(1, 0, 0, 1, 0, 0); // avoid pixel scaling
+    drawingContext.imageSmoothingEnabled = true;
+    drawingContext.strokeStyle = colorToRgba(opposite, strokeA);
+    drawingContext.lineWidth = 3;
     drawingContext.beginPath();
-    drawingContext.arc(cluster.x, cluster.y, outerR, 0, Math.PI * 2);
-    drawingContext.fill();
+    drawingContext.rect(cluster.x - half, cluster.y - half, size, size);
+    drawingContext.stroke();
+    drawingContext.restore();
   });
-
-  drawingContext.restore();
   pop();
+}
+
+function ensureBubbleLoop() {
+  if (bubbleLoop) return;
+  bubbleLoop = new Tone.Loop(time => playBubble(time), 0.35);
+  bubbleLoop.humanize = 0.08;
+}
+
+function playBubble(time) {
+  if (!bubbleSynth) return;
+  const octave = floor(random() * 2 + 5); // C5 or C6
+  bubbleSynth.triggerAttack(`C${octave}`, time);
+}
+
+function testChoir() {
+  if (!choirSynth || !toneStarted) return;
+  const notes = ["C4", "E4", "G4", "B4", "C5"];
+  const now = Tone.now();
+  notes.forEach((n, i) => {
+    choirSynth.triggerAttackRelease(n, 3.5, now + i * 0.08, 0.7);
+  });
+}
+
+function testDrone() {
+  if (!droneTestSynth || !toneStarted) return;
+  const now = Tone.now();
+  droneTestSynth.triggerAttackRelease("C2", 6, now, 0.9);
+}
+
+function updateClusterSound(clusters) {
+  if (!toneStarted || !bubbleSynth) return;
+  ensureBubbleLoop();
+  const active = clusters.filter(c => c.alpha > 0.1);
+  if (!active.length) {
+    bubbleLoop.stop();
+    return;
+  }
+
+  const maxRadius = Math.max(...active.map(c => c.radius));
+  const interval = map(maxRadius, 120, 420, 0.6, 0.25, true);
+  bubbleLoop.interval = interval;
+  const volumeDb = map(active.length, 1, 8, -12, -2, true);
+  bubbleSynth.volume.rampTo(volumeDb, 0.25);
+
+  if (bubbleLoop.state !== "started") bubbleLoop.start();
 }
 
 function complementary(c) {
@@ -988,6 +1256,8 @@ function startAudioIfNeeded() {
   Tone.start()
     .then(() => {
       toneStarted = true;
+      Tone.Transport.start();
+      if (bubbleLoop && bubbleLoop.state !== "started") bubbleLoop.start();
     })
     .catch(err => console.error("Tone start failed", err));
 }
@@ -1000,6 +1270,7 @@ function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   centerVec.set(windowWidth / 2, windowHeight / 2);
   ensureLedBuffer();
+  resizeUiCanvas();
 }
 
 function lerpAngle(a, b, t) {
