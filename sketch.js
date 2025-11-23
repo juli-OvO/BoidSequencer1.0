@@ -12,6 +12,8 @@ let speedSlider;
 let centerVec;
 let masterMeter;
 let ampHistory = [];
+let lastBgColor = { r: 0, g: 0, b: 0 };
+let pitchEnergy = 0;
 const AMP_HISTORY_LEN = 240;
 const SIGNATURE_STEPS = 8;
 let pianoSchedule = [];
@@ -21,6 +23,62 @@ let currentHihatPlaying = [];
 let currentBassPlaying = [];
 let overlayEnabled = true;
 let linkEnabled = true;
+let trackingEnabled = true;
+let glowEnabled = true;
+const LED_PIXEL_SIZE = 6;
+let ledBuffer;
+let mainCanvas;
+
+const PIXEL_PATTERNS = {
+  piano: [
+    "00111100",
+    "01111110",
+    "11111111",
+    "11100111",
+    "11111111",
+    "11111111",
+    "01111110",
+    "00111100"
+  ],
+  kick: [
+    "00011000",
+    "00111100",
+    "01111110",
+    "01111110",
+    "01111110",
+    "01111110",
+    "00111100",
+    "00011000"
+  ],
+  bass: [
+    "00011000",
+    "00111100",
+    "01111110",
+    "11111111",
+    "01111110",
+    "00111100",
+    "00100100",
+    "00100100"
+  ],
+  hihat: [
+    "00001000",
+    "00011100",
+    "00111110",
+    "01111111",
+    "11111111",
+    "00111110",
+    "00111110",
+    "00111110"
+  ],
+  default: [
+    "001100",
+    "011110",
+    "111111",
+    "111111",
+    "011110",
+    "001100"
+  ]
+};
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -30,12 +88,17 @@ let toggles = { hihat: true, bass: true, piano: true, kick: true };
 let toneStarted = false;
 
 function setup() {
-  const canvas = createCanvas(windowWidth, windowHeight);
-  canvas.parent("canvas-wrapper");
+  mainCanvas = createCanvas(windowWidth, windowHeight);
+  mainCanvas.parent("canvas-wrapper");
+  pixelDensity(1);
+  noSmooth();
+  drawingContext.imageSmoothingEnabled = false;
   frameRate(30);
   noStroke();
+  textFont("Courier New");
   speedSlider = document.getElementById("speed-slider");
   centerVec = createVector(width / 2, height / 2);
+  ensureLedBuffer();
   setupToggles();
 
   // instrument regions (home zones)
@@ -119,6 +182,8 @@ function initInstrumentButtons() {
 function setupToggles() {
   const overlayBtn = document.getElementById("overlay-toggle");
   const lineBtn = document.getElementById("line-toggle");
+  const trackingBtn = document.getElementById("tracking-toggle");
+  const glowBtn = document.getElementById("glow-toggle");
   if (overlayBtn) {
     overlayBtn.addEventListener("click", () => {
       overlayEnabled = !overlayEnabled;
@@ -129,6 +194,18 @@ function setupToggles() {
     lineBtn.addEventListener("click", () => {
       linkEnabled = !linkEnabled;
       lineBtn.classList.toggle("off", !linkEnabled);
+    });
+  }
+  if (trackingBtn) {
+    trackingBtn.addEventListener("click", () => {
+      trackingEnabled = !trackingEnabled;
+      trackingBtn.classList.toggle("off", !trackingEnabled);
+    });
+  }
+  if (glowBtn) {
+    glowBtn.addEventListener("click", () => {
+      glowEnabled = !glowEnabled;
+      glowBtn.classList.toggle("off", !glowEnabled);
     });
   }
 }
@@ -146,8 +223,10 @@ if (particles.length > 0) {
   g = constrain(g / particles.length, 0, 255);
   b = constrain(b / particles.length, 0, 255);
   background(r, g, b, 50); // slight transparency for blending
+  lastBgColor = { r, g, b };
 } else {
   background(0);
+  lastBgColor = { r: 0, g: 0, b: 0 };
 }
 
   updateAmplitudeHistory();
@@ -163,18 +242,23 @@ for (let b of boids) {
 }
 
 
-  // update/draw boids
+  // update boids
   for (let b of boids) {
     if (!toggles[b.type]) continue;
     b.flock(boids.filter(o => o.type === b.type));
     b.update();
+  }
+
+  const mixedClusters = glowEnabled ? detectMixedClusters() : [];
+  if (glowEnabled) drawClusterHalos(mixedClusters);
+
+  // draw boids
+  for (let b of boids) {
+    if (!toggles[b.type]) continue;
     b.display();
   }
 
-  if (linkEnabled) {
-    drawPianoKickLines();
-    drawInstrumentLinks();
-  }
+  pitchEnergy = max(0, pitchEnergy * 0.94);
 
   // update/draw particles
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -193,6 +277,11 @@ for (let b of boids) {
   fill(0);
   textAlign(CENTER);
   text("Click boids to toggle | SPACE to play/stop", width / 2, height - 20);
+
+  renderLedScreen();
+
+  // crisp overlay (not downsampled) for link UI
+  if (trackingEnabled) drawVectorLinkOverlay();
 }
 
 function keyPressed() {
@@ -281,6 +370,7 @@ function playScheduledPiano(stepIndex) {
 
   bucket.forEach(entry => {
     pianoSynth.triggerAttackRelease(entry.freq, dur, undefined, 0.55);
+    registerPitch(entry.freq);
     if (entry.boid) {
       currentPianoPlaying.push(entry.boid);
       entry.boid.flash = true;
@@ -423,16 +513,19 @@ class SoundBoid {
 
     if (this.type === "hihat") {
       hihatSynth.triggerAttackRelease("16n", undefined, velocity);
+      registerPitch(8000);
     } else if (this.type === "kick") {
       let pitch = map(speed, 0, 3, 50, 80);
       let dur = Math.max(beatSeconds * 0.25, 0.05);
       kickSynth.triggerAttackRelease(pitch, dur, undefined, velocity);
+      registerPitch(pitch * 10);
     } else if (this.type === "piano") {
       return; // handled globally in playPianoChord
     } else if (this.type === "bass") {
       let f = (noteFreqs[this.col % 7] / 2) * map(speed, 0, 3, 0.9, 1.1);
       let dur = Math.max(beatSeconds * 2, 0.3);
       bassSynth.triggerAttackRelease(f, dur, undefined, velocity);
+      registerPitch(f);
     }
   }
 }
@@ -453,7 +546,8 @@ class Particle {
   display() {
     noStroke();
     fill(red(this.col), green(this.col), blue(this.col), this.life);
-    ellipse(this.pos.x, this.pos.y, 5);
+    const size = 6;
+    rect(this.pos.x - size / 2, this.pos.y - size / 2, size, size);
   }
 }
 
@@ -471,31 +565,41 @@ function drawAmplitudeWave() {
   if (ampHistory.length < 2) return;
   push();
   noFill();
-  let centerY = height / 2;
-  strokeWeight(2);
-
-  stroke(255, 90);
-  beginShape();
-  for (let i = 0; i < ampHistory.length; i++) {
-    let x = map(i, 0, ampHistory.length - 1, 0, width);
-    let amp = ampHistory[i];
-    let wobble = sin(frameCount * 0.015 + i * 0.12) * 8;
-    let displacement = (amp - 0.2) * 140;
-    vertex(x, centerY - displacement + wobble);
+  const rowCount = 4;
+  const rowSpacing = height * 0.12;
+  const startY = height / 2 - rowSpacing * (rowCount - 1) / 2;
+  for (let r = 0; r < rowCount; r++) {
+    const alpha = map(r, 0, rowCount - 1, 60, 120);
+    drawWaveRow(startY + r * rowSpacing, color(255, alpha));
   }
-  endShape();
-
-  stroke(255, 60);
-  beginShape();
-  for (let i = 0; i < ampHistory.length; i++) {
-    let x = map(i, 0, ampHistory.length - 1, 0, width);
-    let amp = ampHistory[i];
-    let wobble = sin(frameCount * 0.015 + i * 0.12 + PI) * 8;
-    let displacement = (amp - 0.2) * 140;
-    vertex(x, centerY + displacement - wobble);
-  }
-  endShape();
   pop();
+}
+
+function drawWaveRow(centerY, strokeCol) {
+  stroke(strokeCol);
+  const len = ampHistory.length;
+  for (let i = 0; i < len - 1; i++) {
+    const x1 = map(i, 0, len - 1, 0, width);
+    const x2 = map(i + 1, 0, len - 1, 0, width);
+    const amp1 = ampHistory[i];
+    const amp2 = ampHistory[i + 1];
+    const wobble1 = sin(frameCount * 0.015 + i * 0.12) * 8;
+    const wobble2 = sin(frameCount * 0.015 + (i + 1) * 0.12) * 8;
+    const displacement1 = (amp1 - 0.2) * 140;
+    const displacement2 = (amp2 - 0.2) * 140;
+    const y1 = centerY + displacement1 + wobble1;
+    const y2 = centerY + displacement2 + wobble2;
+    const avgAmp = (amp1 + amp2) * 0.5;
+    const thickness = map(avgAmp, 0, 1, 1, 10) * (1 + pitchEnergy * 2);
+    strokeWeight(thickness);
+    line(x1, y1, x2, y2);
+  }
+}
+
+function registerPitch(freq) {
+  if (!isFinite(freq)) return;
+  const normalized = constrain(map(freq, 40, 4000, 0, 1), 0, 1);
+  pitchEnergy = max(normalized, pitchEnergy);
 }
 
 // ---- HELPERS ----
@@ -545,21 +649,26 @@ function getBoidColor(b) {
 }
 
 function drawBoidShape(type, size) {
-  if (type === "piano") {
-    rectMode(CENTER);
-    rect(0, 0, size, size, size * 0.1);
-    rectMode(CORNER);
-  } else if (type === "kick") {
-    ellipse(0, 0, size);
-  } else if (type === "bass") {
-    beginShape();
-    for (let i = 0; i < 6; i++) {
-      const angle = TWO_PI / 6 * i;
-      vertex(cos(angle) * size * 0.65, sin(angle) * size * 0.65);
+  const pattern = PIXEL_PATTERNS[type] || PIXEL_PATTERNS.default;
+  drawPixelPattern(pattern, size);
+}
+
+function drawPixelPattern(pattern, size) {
+  if (!pattern || !pattern.length) return;
+  rectMode(CORNER);
+  const rows = pattern.length;
+  const cols = pattern[0].length;
+  const cell = size / Math.max(rows, cols);
+  const totalW = cols * cell;
+  const totalH = rows * cell;
+  const offsetX = -totalW / 2;
+  const offsetY = -totalH / 2;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (pattern[y][x] === "1") {
+        rect(offsetX + x * cell, offsetY + y * cell, cell, cell);
+      }
     }
-    endShape(CLOSE);
-  } else if (type === "hihat") {
-    triangle(-size / 2, size / 2, 0, -size / 2, size / 2, size / 2);
   }
 }
 
@@ -632,39 +741,246 @@ function drawVerticalStrip(list, centerX, topY, bottomY, alpha, maxWidth) {
   }
 }
 
-function drawPianoKickLines() {
-  if (!currentPianoPlaying.length || !currentKickPlaying.length) return;
-  push();
-  stroke(255, 220, 200, 90);
-  strokeWeight(1.5);
-  for (let p of currentPianoPlaying) {
-    for (let k of currentKickPlaying) {
-      line(p.pos.x, p.pos.y, k.pos.x, k.pos.y);
+function drawVectorLinkOverlay() {
+  const pairs = [];
+  const activeBoids = new Set();
+  const addPairs = (groupA, groupB, strokeCol) => {
+    if (!groupA.length || !groupB.length) return;
+    for (let a of groupA) {
+      for (let b of groupB) {
+        pairs.push({ a, b, strokeCol });
+        activeBoids.add(a);
+        activeBoids.add(b);
+      }
     }
-  }
+  };
+
+  addPairs(currentPianoPlaying, currentKickPlaying, color(255, 220, 200, 200));
+  addPairs(currentHihatPlaying, currentKickPlaying, color(255, 200, 200, 180));
+  addPairs(currentPianoPlaying, currentBassPlaying, color(190, 240, 255, 190));
+
+  if (!pairs.length && !activeBoids.size) return;
+
+  push();
+  drawingContext.save();
+  drawingContext.imageSmoothingEnabled = true;
+  strokeCap(ROUND);
+  strokeJoin(ROUND);
+  rectMode(CENTER);
+  textFont("Courier New");
+  textSize(12);
+
+  // lines first, then boxes/labels on top
+  if (linkEnabled) pairs.forEach(drawLinkWithDistance);
+  activeBoids.forEach(b => drawTrackingBox(b));
+
+  drawingContext.restore();
   pop();
 }
 
-function drawInstrumentLinks() {
-  drawLinksBetween(currentHihatPlaying, currentKickPlaying, color(255, 200, 200, 70));
-  drawLinksBetween(currentPianoPlaying, currentBassPlaying, color(200, 255, 255, 70));
+function drawLinkWithDistance(pair) {
+  const { a, b, strokeCol } = pair;
+  if (!a || !b) return;
+  const dir = p5.Vector.sub(b.pos, a.pos);
+  const baseDist = dir.mag();
+  if (baseDist < 1) return;
+  dir.normalize();
+
+  const start = p5.Vector.add(a.pos, p5.Vector.mult(dir, boidBoxSize(a) / 2));
+  const end = p5.Vector.sub(b.pos, p5.Vector.mult(dir, boidBoxSize(b) / 2));
+
+  stroke(strokeCol);
+  strokeWeight(2.5);
+  line(start.x, start.y, end.x, end.y);
+
+  const mid = p5.Vector.add(start, p5.Vector.mult(p5.Vector.sub(end, start), 0.5));
+  drawDistanceLabel(mid, `${floor(baseDist)}`, strokeCol);
 }
 
-function drawLinksBetween(groupA, groupB, strokeColor) {
-  if (!groupA.length || !groupB.length) return;
+function drawTrackingBox(boid) {
+  const size = boidBoxSize(boid);
+  const accent = complementary(boid.baseColor);
+  const label = instrumentLabel(boid.type);
+
   push();
-  stroke(strokeColor);
-  strokeWeight(1);
-  for (let a of groupA) {
-    for (let b of groupB) {
-      line(a.pos.x, a.pos.y, b.pos.x, b.pos.y);
+  rectMode(CENTER);
+  noFill();
+  stroke(red(accent), green(accent), blue(accent), 240);
+  strokeWeight(2.5);
+  rect(boid.pos.x, boid.pos.y, size, size, 6);
+
+  const labelX = boid.pos.x + size / 2 + 12;
+  const labelY = boid.pos.y - size / 2 - 6;
+  const padding = 4;
+  const textW = textWidth(label);
+
+  noStroke();
+  fill(0, 180);
+  rectMode(CORNER);
+  rect(labelX - padding, labelY - 10, textW + padding * 2, 18, 3);
+  fill(red(accent), green(accent), blue(accent), 230);
+  textAlign(LEFT, CENTER);
+  text(label, labelX, labelY - 1);
+
+  pop();
+}
+
+function drawDistanceLabel(pos, textStr, col) {
+  push();
+  textSize(11);
+  textAlign(CENTER, CENTER);
+  const padding = 5;
+  const txtW = textWidth(textStr);
+
+  noStroke();
+  fill(0, 180);
+  rectMode(CENTER);
+  rect(pos.x, pos.y, txtW + padding * 2, 16, 3);
+
+  fill(red(col), green(col), blue(col), 230);
+  text(textStr, pos.x, pos.y + 1);
+  pop();
+}
+
+function instrumentLabel(type) {
+  if (type === "hihat") return "Hi-hat";
+  if (type === "kick") return "Kick";
+  if (type === "piano") return "Piano";
+  if (type === "bass") return "Bass";
+  return type || "";
+}
+
+function boidBoxSize(boid) {
+  return (boid?.size || 50) * 1.15;
+}
+
+function detectMixedClusters() {
+  const active = boids.filter(b => toggles[b.type]);
+  const perceptionRadius = 160;
+  const minBoids = 5;
+  const minTypes = 3;
+  let candidates = [];
+
+  for (let base of active) {
+    let group = [];
+    let typeSet = new Set();
+    for (let other of active) {
+      const d = dist(base.pos.x, base.pos.y, other.pos.x, other.pos.y);
+      if (d < perceptionRadius) {
+        group.push(other);
+        typeSet.add(other.type);
+      }
+    }
+
+    if (group.length >= minBoids && typeSet.size >= minTypes) {
+      let cx = 0, cy = 0;
+      for (let g of group) {
+        cx += g.pos.x;
+        cy += g.pos.y;
+      }
+      cx /= group.length;
+      cy /= group.length;
+
+      let maxD = 0;
+      for (let g of group) {
+        const d = dist(cx, cy, g.pos.x, g.pos.y);
+        maxD = Math.max(maxD, d);
+      }
+
+      candidates.push({ x: cx, y: cy, radius: Math.max(maxD + 60, perceptionRadius * 0.7) });
     }
   }
+
+  // merge overlapping candidates to avoid duplicate halos
+  let merged = [];
+  for (let c of candidates) {
+    let mergedInto = false;
+    for (let m of merged) {
+      const d = dist(c.x, c.y, m.x, m.y);
+      if (d < (c.radius + m.radius) * 0.5) {
+        m.x = (m.x + c.x) / 2;
+        m.y = (m.y + c.y) / 2;
+        m.radius = Math.max(m.radius, c.radius);
+        mergedInto = true;
+        break;
+      }
+    }
+    if (!mergedInto) merged.push({ ...c });
+  }
+
+  return merged;
+}
+
+function drawClusterHalos(clusters) {
+  if (!clusters.length) return;
+  push();
+  drawingContext.save();
+  drawingContext.globalCompositeOperation = "lighter";
+
+  clusters.forEach(cluster => {
+    const bgColor = getCanvasColorAt(cluster.x, cluster.y);
+    const opposite = complementary(bgColor);
+    const innerR = cluster.radius * 0.45;
+    const outerR = cluster.radius;
+
+    const glow = drawingContext.createRadialGradient(
+      cluster.x, cluster.y, innerR * 0.3,
+      cluster.x, cluster.y, outerR
+    );
+    glow.addColorStop(0, colorToRgba(opposite, 0.55));
+    glow.addColorStop(0.6, colorToRgba(opposite, 0.28));
+    glow.addColorStop(1, colorToRgba(opposite, 0));
+    drawingContext.fillStyle = glow;
+    drawingContext.beginPath();
+    drawingContext.arc(cluster.x, cluster.y, outerR, 0, Math.PI * 2);
+    drawingContext.fill();
+  });
+
+  drawingContext.restore();
   pop();
 }
 
 function complementary(c) {
   return color(255 - red(c), 255 - green(c), 255 - blue(c));
+}
+
+function colorToRgba(col, alpha) {
+  return `rgba(${red(col)}, ${green(col)}, ${blue(col)}, ${alpha})`;
+}
+
+function getCanvasColorAt(x, y) {
+  const px = constrain(floor(x), 0, width - 1);
+  const py = constrain(floor(y), 0, height - 1);
+  const sample = get(px, py);
+  if (Array.isArray(sample) && sample.length >= 3) {
+    return color(sample[0], sample[1], sample[2]);
+  }
+  return color(0);
+}
+
+function ensureLedBuffer() {
+  const targetW = Math.max(1, Math.floor(width / LED_PIXEL_SIZE));
+  const targetH = Math.max(1, Math.floor(height / LED_PIXEL_SIZE));
+  if (ledBuffer && ledBuffer.width === targetW && ledBuffer.height === targetH) return;
+  ledBuffer = createGraphics(targetW, targetH);
+  ledBuffer.pixelDensity(1);
+  ledBuffer.noSmooth();
+  ledBuffer.drawingContext.imageSmoothingEnabled = false;
+}
+
+function renderLedScreen() {
+  ensureLedBuffer();
+  if (!ledBuffer || !mainCanvas) return;
+  ledBuffer.clear();
+  ledBuffer.drawingContext.imageSmoothingEnabled = false;
+  ledBuffer.drawingContext.drawImage(
+    mainCanvas.elt,
+    0, 0, width, height,
+    0, 0, ledBuffer.width, ledBuffer.height
+  );
+  clear();
+  drawingContext.imageSmoothingEnabled = false;
+  image(ledBuffer, 0, 0, width, height);
 }
 
 function startAudioIfNeeded() {
@@ -683,6 +999,7 @@ function touchStarted() {
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   centerVec.set(windowWidth / 2, windowHeight / 2);
+  ensureLedBuffer();
 }
 
 function lerpAngle(a, b, t) {

@@ -4,7 +4,7 @@ html, body {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-family: "Courier New", "Lucida Console", monospace;
   background: #050505;
   color: #f5f5f5;
 }
@@ -25,6 +25,8 @@ canvas {
   display: block;
   width: 100% !important;
   height: 100% !important;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 #top-bar {
@@ -38,9 +40,11 @@ canvas {
   padding: 12px 20px;
   background: rgba(0, 0, 0, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 999px;
+  border-radius: 0;
   z-index: 10;
   backdrop-filter: blur(10px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 #speed-slider {
@@ -48,7 +52,7 @@ canvas {
   -webkit-appearance: none;
   appearance: none;
   height: 10px;
-  border-radius: 999px;
+  border-radius: 0;
   background: rgba(255, 255, 255, 0.2);
   outline: none;
 }
@@ -58,7 +62,7 @@ canvas {
   appearance: none;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: 0;
   background: #fff;
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
   cursor: pointer;
@@ -67,7 +71,7 @@ canvas {
 #speed-slider::-moz-range-thumb {
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: 0;
   background: #fff;
   border: none;
   cursor: pointer;
@@ -87,7 +91,7 @@ canvas {
   background: rgba(255, 255, 255, 0.08);
   color: #f5f5f5;
   border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 8px 14px;
   font-size: 13px;
   cursor: pointer;
@@ -104,11 +108,13 @@ canvas {
   background: rgba(0, 0, 0, 0.65);
   color: #f5f5f5;
   border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 14px;
   cursor: pointer;
   transition: transform 0.1s ease, background 0.2s ease;
   backdrop-filter: blur(6px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .instr-btn:hover {
