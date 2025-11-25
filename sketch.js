@@ -271,7 +271,6 @@ if (particles.length > 0) {
 }
 
   updateAmplitudeHistory();
-  drawAmplitudeWave();
   if (overlayEnabled) drawInstrumentOverlay();
 // --- Adjust speed based on slider ---
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
@@ -327,6 +326,11 @@ for (let b of boids) {
   text("Click boids to toggle | SPACE to play/stop", width / 2, height - 20);
 
   renderLedScreen();
+  // draw amplitude after pixelation so it's crisp
+  const prevSmooth = drawingContext.imageSmoothingEnabled;
+  drawingContext.imageSmoothingEnabled = true;
+  drawAmplitudeWave();
+  drawingContext.imageSmoothingEnabled = prevSmooth;
 
   // crisp overlay (separate canvas) for link UI
   renderUiOverlay();
@@ -612,36 +616,60 @@ function updateAmplitudeHistory() {
 function drawAmplitudeWave() {
   if (ampHistory.length < 2) return;
   push();
-  noFill();
-  const rowCount = 3;
-  const rowSpacing = height * 0.08;
-  const startY = height / 2 - rowSpacing * (rowCount - 1) / 2;
-  for (let r = 0; r < rowCount; r++) {
-    const alpha = map(r, 0, rowCount - 1, 70, 140);
-    drawWaveRow(startY + r * rowSpacing, color(255, alpha));
-  }
+  translate(width / 2, height / 2);
+  rotate(radians(35)); // tilt
+  drawAmplitudeSphere();
   pop();
 }
 
-function drawWaveRow(centerY, strokeCol) {
-  stroke(strokeCol);
+function drawAmplitudeSphere() {
+  const sphereRadius = height * 0.33; // ~2/3 of screen height diameter
+  const tiltScale = 0.65;
+  const rowCount = 5;
+  const ringBase = sphereRadius * 0.65;
+  const ringStep = sphereRadius * 0.06;
+  drawSphereBase(sphereRadius, tiltScale);
+
   const len = ampHistory.length;
-  for (let i = 0; i < len - 1; i++) {
-    const x1 = map(i, 0, len - 1, 0, width);
-    const x2 = map(i + 1, 0, len - 1, 0, width);
-    const amp1 = ampHistory[i];
-    const amp2 = ampHistory[i + 1];
-    const wobble1 = sin(frameCount * 0.012 + i * 0.1) * 5;
-    const wobble2 = sin(frameCount * 0.012 + (i + 1) * 0.1) * 5;
-    const displacement1 = (amp1 - 0.15) * 90;
-    const displacement2 = (amp2 - 0.15) * 90;
-    const y1 = centerY + displacement1 + wobble1;
-    const y2 = centerY + displacement2 + wobble2;
-    const avgAmp = (amp1 + amp2) * 0.5;
-    const thickness = map(avgAmp, 0, 1, 1.5, 14) * (1 + pitchEnergy * 1.5);
-    strokeWeight(thickness);
-    line(x1, y1, x2, y2);
+  for (let r = 0; r < rowCount; r++) {
+    const radius = ringBase + r * ringStep;
+    const alpha = map(r, 0, rowCount - 1, 180, 80);
+    drawAmplitudeRing(radius, tiltScale, len, alpha);
   }
+}
+
+function drawSphereBase(radius, tiltScale) {
+  const ctx = drawingContext;
+  const grad = ctx.createRadialGradient(0, -radius * 0.25, radius * 0.2, 0, 0, radius);
+  grad.addColorStop(0, "rgba(255,255,255,0.08)");
+  grad.addColorStop(0.6, "rgba(200,220,255,0.04)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  push();
+  scale(1, tiltScale);
+  noStroke();
+  ctx.fillStyle = grad;
+  ellipse(0, 0, radius * 2, radius * 2);
+  pop();
+}
+
+function drawAmplitudeRing(baseRadius, tiltScale, len, alpha) {
+  const maxKick = 28 * (1 + pitchEnergy * 1.2);
+  stroke(255, alpha);
+  noFill();
+  beginShape();
+  for (let i = 0; i < len; i++) {
+    const t = i / (len - 1);
+    const angle = t * TWO_PI;
+    const amp = ampHistory[i];
+    const wobble = sin(frameCount * 0.01 + i * 0.12) * 4;
+    const radius = baseRadius + (amp - 0.1) * maxKick + wobble;
+    const x = cos(angle) * radius;
+    const y = sin(angle) * radius * tiltScale;
+    const thickness = map(amp, 0, 1, 1.5, 10) * (1 + pitchEnergy);
+    strokeWeight(thickness);
+    vertex(x, y);
+  }
+  endShape(CLOSE);
 }
 
 function registerPitch(freq) {
