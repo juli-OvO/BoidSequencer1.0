@@ -28,6 +28,13 @@ let glowEnabled = true;
 const LED_PIXEL_SIZE = 6;
 let ledBuffer;
 let mainCanvas;
+let threeRenderer, threeScene, threeCamera, threeRootGroup;
+let raycaster, pointer;
+let orbitControls;
+let ringPreviewCanvas, ringPreviewCtx, hoverReadoutEl, selectedLabelEl;
+let ringState = [];
+let selectedRingId = "kick";
+let ringMeshes = new Map();
 
 const PIXEL_PATTERNS = {
   piano: [
@@ -80,6 +87,15 @@ const PIXEL_PATTERNS = {
   ]
 };
 
+const PIANO_NOTE_NAMES = ["C", "D", "E", "F", "G", "A", "B"];
+const BASS_NOTE_NAMES = ["C2", "D2", "E2", "F2", "G2", "A2", "B2"];
+const RING_LAYOUT = [
+  { id: "kick", label: "Kick", sections: 8, radius: 62, thickness: 12, rotateSpeed: 0.008, color: "#ffd9b3", noteNames: Array.from({ length: 8 }, (_, i) => `Kick ${i + 1}`) },
+  { id: "hihat", label: "Hi-hat", sections: 8, radius: 92, thickness: 12, rotateSpeed: -0.007, color: "#c7f6d6", noteNames: Array.from({ length: 8 }, (_, i) => `Hat ${i + 1}`) },
+  { id: "piano", label: "Piano", sections: 7, radius: 126, thickness: 14, rotateSpeed: 0.006, color: "#c7e3ff", noteNames: PIANO_NOTE_NAMES },
+  { id: "bass", label: "Bass", sections: 7, radius: 156, thickness: 16, rotateSpeed: -0.004, color: "#f4cef9", noteNames: BASS_NOTE_NAMES }
+];
+
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
 let noteFreqs = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88];
@@ -88,17 +104,16 @@ let toggles = { hihat: true, bass: true, piano: true, kick: true };
 let toneStarted = false;
 
 function setup() {
-  mainCanvas = createCanvas(windowWidth, windowHeight);
-  mainCanvas.parent("canvas-wrapper");
+  mainCanvas = createCanvas(200, 200);
+  mainCanvas.parent("p5-stub");
+  mainCanvas.hide();
   pixelDensity(1);
   noSmooth();
-  drawingContext.imageSmoothingEnabled = false;
   frameRate(30);
   noStroke();
   textFont("Courier New");
   speedSlider = document.getElementById("speed-slider");
   centerVec = createVector(width / 2, height / 2);
-  ensureLedBuffer();
   setupToggles();
 
   // instrument regions (home zones)
@@ -166,6 +181,11 @@ function setup() {
   beatLength = 60000 / bpm;
 
   initInstrumentButtons();
+  initUIRefs();
+  buildRingState();
+  initThreeScene();
+  initRingPreview();
+  updateHoverReadout();
 }
 
 function initInstrumentButtons() {
@@ -177,6 +197,13 @@ function initInstrumentButtons() {
       btn.classList.toggle("off", !toggles[type]);
     });
   });
+}
+
+function initUIRefs() {
+  ringPreviewCanvas = document.getElementById("ring-preview");
+  ringPreviewCtx = ringPreviewCanvas ? ringPreviewCanvas.getContext("2d") : null;
+  hoverReadoutEl = document.getElementById("hover-readout");
+  selectedLabelEl = document.getElementById("selected-label");
 }
 
 function setupToggles() {
@@ -210,78 +237,371 @@ function setupToggles() {
   }
 }
 
+function buildRingState() {
+  ringState = RING_LAYOUT.map(cfg => {
+    const sections = [];
+    for (let i = 0; i < cfg.sections; i++) {
+      const boid = boids.find(b => b.type === cfg.id && b.col === i);
+      sections.push({
+        index: i,
+        on: boid ? boid.on : true,
+        note: cfg.noteNames[i % cfg.noteNames.length],
+        boid
+      });
+    }
+    return { ...cfg, sections };
+  });
+  updateSelectedLabel();
+}
+
+function updateSelectedLabel() {
+  const ring = ringState.find(r => r.id === selectedRingId);
+  if (selectedLabelEl && ring) {
+    selectedLabelEl.textContent = ring.label;
+  }
+}
+
+function getRingById(id) {
+  return ringState.find(r => r.id === id);
+}
+
+function initThreeScene() {
+  const container = document.getElementById("three-container");
+  if (!container) return;
+
+  threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  threeRenderer.setPixelRatio(window.devicePixelRatio || 1);
+  container.innerHTML = "";
+  container.appendChild(threeRenderer.domElement);
+
+  threeScene = new THREE.Scene();
+  threeScene.fog = new THREE.FogExp2(0x0e1016, 0.0025);
+
+  const aspect = container.clientWidth / Math.max(container.clientHeight, 1);
+  threeCamera = new THREE.PerspectiveCamera(42, aspect, 0.1, 1000);
+  threeCamera.position.set(0, 0, 320);
+
+  raycaster = new THREE.Raycaster();
+  pointer = new THREE.Vector2();
+
+  const ambient = new THREE.AmbientLight(0xffffff, 1.4);
+  const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+  dir.position.set(1.6, 1.2, 2.2);
+
+  threeScene.add(ambient);
+  threeScene.add(dir);
+
+  threeRootGroup = new THREE.Group();
+  threeScene.add(threeRootGroup);
+
+  orbitControls = new THREE.OrbitControls(threeCamera, threeRenderer.domElement);
+  orbitControls.enableDamping = true;
+  orbitControls.dampingFactor = 0.08;
+  orbitControls.rotateSpeed = 0.6;
+  orbitControls.zoomSpeed = 0.8;
+  orbitControls.panSpeed = 0.7;
+  orbitControls.screenSpacePanning = true;
+  orbitControls.minDistance = 180;
+  orbitControls.maxDistance = 520;
+  orbitControls.target.set(0, 0, 0);
+
+  buildAllRingMeshes();
+  resizeThree();
+
+  container.addEventListener("pointermove", handleThreePointerMove);
+  container.addEventListener("click", handleThreeClick);
+
+  animateThree();
+}
+
+function buildAllRingMeshes() {
+  if (!threeRootGroup) return;
+  threeRootGroup.clear();
+  ringMeshes.clear();
+  ringState.forEach(ring => {
+    const { group, sectionMeshes } = createRingGroup(ring);
+    group.rotation.z = random(TWO_PI);
+    threeRootGroup.add(group);
+    ringMeshes.set(ring.id, { group, sectionMeshes, rotateSpeed: ring.rotateSpeed || 0.003 });
+  });
+}
+
+function createRingGroup(ring) {
+  const group = new THREE.Group();
+  const sectionMeshes = [];
+  const inner = ring.radius;
+  const outer = ring.radius + ring.thickness;
+  const baseColor = new THREE.Color(ring.color);
+  const segmentAngle = (Math.PI * 2) / ring.sections.length;
+  const gap = segmentAngle * 0.12;
+
+  ring.sections.forEach((section, i) => {
+    const start = i * segmentAngle + gap * 0.5;
+    const geom = new THREE.RingGeometry(inner, outer, 72, 1, start, segmentAngle - gap);
+    const mat = new THREE.MeshStandardMaterial({
+      color: baseColor.clone(),
+      emissive: baseColor.clone().multiplyScalar(0.4),
+      transparent: true,
+      opacity: section.on ? 0.86 : 0.35,
+      side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.rotation.x = 0.46;
+    mesh.rotation.y = 0.18;
+    mesh.userData = { ringId: ring.id, index: i, sectionRef: section, flash: 0 };
+    applySectionMaterial(mesh, ring, section);
+    sectionMeshes.push(mesh);
+    group.add(mesh);
+  });
+
+  return { group, sectionMeshes };
+}
+
+function applySectionMaterial(mesh, ring, section) {
+  if (!mesh || !section || !ring) return;
+  const base = new THREE.Color(ring.color);
+  const selected = ring.id === selectedRingId;
+  const activeScale = section.on ? (selected ? 1.22 : 1.05) : 0.42;
+  mesh.material.color = base.clone().multiplyScalar(activeScale);
+  mesh.material.emissive = base.clone().multiplyScalar(section.on ? 0.52 : 0.08);
+  mesh.material.opacity = section.on ? 0.88 : 0.32;
+}
+
+function handleThreePointerMove(evt) {
+  pickThreeSection(evt, (ringId, index) => updateHoverReadout(ringId, index));
+}
+
+function handleThreeClick(evt) {
+  startAudioIfNeeded();
+  pickThreeSection(evt, (ringId) => {
+    selectedRingId = ringId;
+    updateSelectedLabel();
+    updateRingMeshesFromState(ringId);
+    renderRingPreview();
+    updateHoverReadout();
+  });
+}
+
+function pickThreeSection(evt, onPick) {
+  if (!threeRenderer || !raycaster || !threeCamera) return;
+  const rect = threeRenderer.domElement.getBoundingClientRect();
+  pointer.x = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((evt.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, threeCamera);
+  const allMeshes = [];
+  ringMeshes.forEach(({ sectionMeshes }) => allMeshes.push(...sectionMeshes));
+  const hits = raycaster.intersectObjects(allMeshes, false);
+  if (hits.length && onPick) {
+    const { ringId, index } = hits[0].object.userData;
+    onPick(ringId, index);
+  } else if (onPick) {
+    onPick(selectedRingId, -1);
+  }
+}
+
+function animateThree() {
+  requestAnimationFrame(animateThree);
+  ringMeshes.forEach(({ group, sectionMeshes, rotateSpeed }) => {
+    group.rotation.z += rotateSpeed;
+    sectionMeshes.forEach(mesh => {
+      if (mesh.userData.flash > 0) {
+        mesh.userData.flash *= 0.88;
+        mesh.material.emissiveIntensity = 0.65 + mesh.userData.flash * 1.1;
+      } else {
+        mesh.material.emissiveIntensity = 0.6;
+      }
+    });
+  });
+
+  if (orbitControls) orbitControls.update();
+
+  if (threeRenderer && threeScene && threeCamera) {
+    threeRenderer.render(threeScene, threeCamera);
+  }
+}
+
+function resizeThree() {
+  const container = document.getElementById("three-container");
+  if (!container || !threeRenderer || !threeCamera) return;
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  threeRenderer.setSize(w, h, false);
+  threeCamera.aspect = w / Math.max(h, 1);
+  threeCamera.updateProjectionMatrix();
+  if (orbitControls) orbitControls.update();
+}
+
+function updateRingMeshesFromState(ringId) {
+  const ring = getRingById(ringId);
+  const meshBundle = ringMeshes.get(ringId);
+  if (!ring || !meshBundle) return;
+  meshBundle.sectionMeshes.forEach((mesh, idx) => {
+    mesh.userData.sectionRef = ring.sections[idx];
+    applySectionMaterial(mesh, ring, ring.sections[idx]);
+  });
+}
+
+function pulseSection(ringId, index) {
+  const meshBundle = ringMeshes.get(ringId);
+  if (!meshBundle) return;
+  const mesh = meshBundle.sectionMeshes[index];
+  if (mesh) {
+    mesh.userData.flash = 1;
+  }
+}
+
+function initRingPreview() {
+  if (!ringPreviewCanvas || !ringPreviewCtx) return;
+  const legend = document.getElementById("mini-legend");
+  if (legend) {
+    legend.textContent = "Click a 3D ring to select it. Click slices in the 2D ring to toggle notes on/off.";
+  }
+  ringPreviewCanvas.addEventListener("mousemove", handlePreviewHover);
+  ringPreviewCanvas.addEventListener("mouseleave", () => updateHoverReadout());
+  ringPreviewCanvas.addEventListener("click", handlePreviewClick);
+  resizeRingPreview();
+}
+
+function handlePreviewHover(evt) {
+  const idx = previewIndexFromEvent(evt);
+  updateHoverReadout(selectedRingId, idx);
+}
+
+function handlePreviewClick(evt) {
+  startAudioIfNeeded();
+  const idx = previewIndexFromEvent(evt);
+  if (idx >= 0) {
+    toggleSection(selectedRingId, idx);
+  }
+}
+
+function previewIndexFromEvent(evt) {
+  const ring = getRingById(selectedRingId);
+  if (!ring || !ringPreviewCanvas) return -1;
+  const rect = ringPreviewCanvas.getBoundingClientRect();
+  const scaleX = ringPreviewCanvas.width / rect.width;
+  const scaleY = ringPreviewCanvas.height / rect.height;
+  const px = (evt.clientX - rect.left) * scaleX;
+  const py = (evt.clientY - rect.top) * scaleY;
+  const cx = ringPreviewCanvas.width / 2;
+  const cy = ringPreviewCanvas.height / 2;
+  const dx = px - cx;
+  const dy = py - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const ringRadius = Math.min(cx, cy) * 0.62;
+  const inner = ringRadius * 0.55;
+  if (dist < inner || dist > ringRadius * 1.07) return -1;
+  let ang = Math.atan2(dy, dx) + Math.PI / 2;
+  if (ang < 0) ang += Math.PI * 2;
+  const segment = (Math.PI * 2) / ring.sections.length;
+  return floor(ang / segment);
+}
+
+function toggleSection(ringId, index) {
+  const ring = getRingById(ringId);
+  if (!ring) return;
+  const section = ring.sections[index];
+  section.on = !section.on;
+  if (section.boid) section.boid.on = section.on;
+  updateRingMeshesFromState(ringId);
+  renderRingPreview();
+  updateHoverReadout(ringId, index);
+}
+
+function syncRingSectionFromBoid(type, col, onState) {
+  const ring = getRingById(type);
+  if (!ring) return;
+  const section = ring.sections.find(s => s.index === col);
+  if (section) {
+    section.on = onState;
+    renderRingPreview();
+    updateRingMeshesFromState(type);
+  }
+}
+
+function updateHoverReadout(ringId = selectedRingId, index = -1) {
+  if (!hoverReadoutEl) return;
+  const ring = getRingById(ringId);
+  if (!ring) {
+    hoverReadoutEl.textContent = "";
+    return;
+  }
+  if (index < 0) {
+    const active = ring.sections.filter(s => s.on).length;
+    hoverReadoutEl.textContent = `${ring.label}: ${active}/${ring.sections.length} on`;
+    return;
+  }
+  const section = ring.sections[index];
+  hoverReadoutEl.textContent = `${ring.label} – ${section.note} · ${section.on ? "ON" : "off"} (step ${index + 1})`;
+}
+
+function renderRingPreview() {
+  if (!ringPreviewCanvas || !ringPreviewCtx) return;
+  const ring = getRingById(selectedRingId);
+  if (!ring) return;
+  const ctx = ringPreviewCtx;
+  const w = ringPreviewCanvas.width;
+  const h = ringPreviewCanvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const cx = w / 2;
+  const cy = h / 2;
+  const radius = Math.min(w, h) * 0.33;
+  const thickness = Math.min(w, h) * 0.11;
+  const segment = (Math.PI * 2) / ring.sections.length;
+  const gap = segment * 0.12;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  ring.sections.forEach((section, i) => {
+    const start = i * segment + gap * 0.5 - Math.PI / 2;
+    const end = start + segment - gap;
+    ctx.beginPath();
+    ctx.strokeStyle = section.on ? ring.color : "rgba(255,255,255,0.2)";
+    ctx.lineWidth = thickness;
+    ctx.lineCap = "round";
+    ctx.arc(0, 0, radius, start, end, false);
+    ctx.stroke();
+
+    const isCurrent = step % ring.sections.length === i;
+    if (isCurrent) {
+      const markerR = radius + thickness * 0.35;
+      ctx.fillStyle = section.on ? ring.color : "rgba(255,255,255,0.45)";
+      ctx.beginPath();
+      ctx.arc(Math.cos((start + end) / 2) * markerR, Math.sin((start + end) / 2) * markerR, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  ctx.restore();
+}
+
+function resizeRingPreview() {
+  if (!ringPreviewCanvas) return;
+  const bounds = ringPreviewCanvas.getBoundingClientRect();
+  const base = Math.max(Math.min(bounds.width, bounds.height), bounds.width);
+  const size = Math.floor(base * (window.devicePixelRatio || 1));
+  if (size > 0) {
+    ringPreviewCanvas.width = size;
+    ringPreviewCanvas.height = size;
+  }
+  renderRingPreview();
+}
 function draw() {
-  // --- Dynamic background based on particle colors ---
-if (particles.length > 0) {
-  let r = 0, g = 0, b = 0;
-  for (let p of particles) {
-    r += red(p.col);
-    g += green(p.col);
-    b += blue(p.col);
-  }
-  r = constrain(r / particles.length, 0, 255);
-  g = constrain(g / particles.length, 0, 255);
-  b = constrain(b / particles.length, 0, 255);
-  background(r, g, b, 50); // slight transparency for blending
-  lastBgColor = { r, g, b };
-} else {
-  background(0);
-  lastBgColor = { r: 0, g: 0, b: 0 };
-}
-
-  updateAmplitudeHistory();
-  drawAmplitudeWave();
-  if (overlayEnabled) drawInstrumentOverlay();
-// --- Adjust speed based on slider ---
-let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
-beatLength = 60000 / (bpm * speedFactor);
-
-// scale boid motion
-for (let b of boids) {
-  b.maxSpeed = 1.5 * speedFactor;  // scales with tempo
-}
-
-
-  // update boids
+  // maintain audio timing and tempo adjustments
+  const speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
+  beatLength = 60000 / (bpm * speedFactor);
   for (let b of boids) {
-    if (!toggles[b.type]) continue;
-    b.flock(boids.filter(o => o.type === b.type));
-    b.update();
+    b.maxSpeed = 1.5 * speedFactor;
   }
 
-  const mixedClusters = glowEnabled ? detectMixedClusters() : [];
-  if (glowEnabled) drawClusterHalos(mixedClusters);
-
-  // draw boids
-  for (let b of boids) {
-    if (!toggles[b.type]) continue;
-    b.display();
-  }
-
-  pitchEnergy = max(0, pitchEnergy * 0.94);
-
-  // update/draw particles
-  for (let i = particles.length - 1; i >= 0; i--) {
-    particles[i].update();
-    particles[i].display();
-    if (particles[i].life <= 0) particles.splice(i, 1);
-  }
-
-  // deltaTime-based beat
   accum += deltaTime;
   if (playing && accum > beatLength / 2) {
     accum = 0;
     stepBeat();
+    renderRingPreview();
   }
-
-  fill(0);
-  textAlign(CENTER);
-  text("Click boids to toggle | SPACE to play/stop", width / 2, height - 20);
-
-  renderLedScreen();
-
-  // crisp overlay (not downsampled) for link UI
-  if (trackingEnabled) drawVectorLinkOverlay();
 }
 
 function keyPressed() {
@@ -298,6 +618,7 @@ function mousePressed() {
     if (!toggles[b.type]) continue;
     if (dist(mouseX, mouseY, b.pos.x, b.pos.y) < b.size / 2 + 5) {
       b.toggle();
+      syncRingSectionFromBoid(b.type, b.col, b.on);
       break;
     }
   }
@@ -329,6 +650,7 @@ function playInstrument(type, numCols) {
       if (type === "kick") currentKickPlaying.push(b);
       if (type === "hihat") currentHihatPlaying.push(b);
       if (type === "bass") currentBassPlaying.push(b);
+      pulseSection(type, b.col);
     }
   }
 }
@@ -339,6 +661,7 @@ function playBassChord() {
   for (let b of subset) {
     if (b.on) { // ✅ only active boids
       b.play();
+      pulseSection("bass", b.col);
       for (let i = 0; i < 6; i++) particles.push(new Particle(b.pos.copy(), b.baseColor));
     }
   }
@@ -997,9 +1320,10 @@ function touchStarted() {
 }
 
 function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-  centerVec.set(windowWidth / 2, windowHeight / 2);
-  ensureLedBuffer();
+  resizeCanvas(200, 200);
+  centerVec.set(width / 2, height / 2);
+  resizeThree();
+  resizeRingPreview();
 }
 
 function lerpAngle(a, b, t) {
