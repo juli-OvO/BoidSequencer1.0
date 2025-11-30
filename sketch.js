@@ -14,6 +14,7 @@ let linePosSlider, lineYSlider, ratioSlider, waveSelect;
 let lineSoundBtn;
 let logEntriesEl;
 let infoLineXEl, infoLineYEl, infoRatioEl, infoPlayingVEl, infoPlayingHEl;
+let joinBtn;
 let centerVec;
 let masterMeter;
 let ampHistory = [];
@@ -34,6 +35,15 @@ let segmentActiveV = [];
 let segmentActiveH = [];
 let segmentLog = [];
 let lineSoundEnabled = true;
+let combineMorphStart = null;
+const COMBINE_MORPH_DURATION = 10000;
+let boidBus, lineXBus, lineYBus;
+let boidMeter, lineXMeter, lineYMeter;
+let ampHistoryBoid = [];
+let ampHistoryX = [];
+let ampHistoryY = [];
+let ampHistoryUnion = [];
+let lastBgColor = { r: 0, g: 0, b: 0 };
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -54,6 +64,7 @@ function setup() {
   ratioSlider = document.getElementById("ratio-slider");
   waveSelect = document.getElementById("wave-select");
   lineSoundBtn = document.getElementById("line-sound-btn");
+  joinBtn = document.getElementById("join-btn");
   logEntriesEl = document.getElementById("log-entries");
   infoLineXEl = document.getElementById("info-line-x");
   infoLineYEl = document.getElementById("info-line-y");
@@ -91,6 +102,11 @@ function setup() {
       if (!lineSoundEnabled) stopAllSegments();
     });
   }
+  if (joinBtn) {
+    joinBtn.addEventListener("click", () => {
+      combineMorphStart = millis();
+    });
+  }
   centerVec = createVector(width / 2, height / 2);
 
   // instrument regions (home zones)
@@ -111,17 +127,28 @@ function setup() {
   masterMeter = new Tone.Meter({ smoothing: 0.8 });
   toneReverb.connect(masterMeter);
 
+  boidBus = new Tone.Gain().connect(toneReverb);
+  lineXBus = new Tone.Gain().connect(toneReverb);
+  lineYBus = new Tone.Gain().connect(toneReverb);
+
+  boidMeter = new Tone.Meter({ smoothing: 0.8 });
+  lineXMeter = new Tone.Meter({ smoothing: 0.8 });
+  lineYMeter = new Tone.Meter({ smoothing: 0.8 });
+  boidBus.connect(boidMeter);
+  lineXBus.connect(lineXMeter);
+  lineYBus.connect(lineYMeter);
+
   hihatSynth = new Tone.NoiseSynth({
     noise: { type: "white" },
     envelope: { attack: 0.001, decay: 0.05, sustain: 0.0001, release: 0.02 }
-  }).connect(toneReverb);
+  }).connect(boidBus);
   hihatSynth.volume.value = -12; 
 
   kickSynth = new Tone.MembraneSynth({
     pitchDecay: 0.05,
     octaves: 5,
     envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.3 }
-  }).connect(toneReverb);
+  }).connect(boidBus);
 
   pianoSynth = new Tone.PolySynth(Tone.Synth, {
     oscillator: {
@@ -145,7 +172,7 @@ function setup() {
 
   const kalimbaReverb = new Tone.Reverb({ decay: 6, wet: 0.5 });
 
-  pianoSynth.chain(kalimbaFilter, kalimbaReverb, toneReverb);
+  pianoSynth.chain(kalimbaFilter, kalimbaReverb, boidBus);
   pianoSynth.volume.value = -12;
 
   bassSynth = new Tone.PolySynth(Tone.MonoSynth, {
@@ -153,7 +180,7 @@ function setup() {
     filter: { Q: 1, type: "lowpass", rolloff: -24 },
     envelope: { attack: 0.02, decay: 0.3, sustain: 0.4, release: 0.8 },
     filterEnvelope: { attack: 0.30, decay: 0.2, sustain: 0.2, release: 0.6, baseFrequency: 100, octaves: 2 }
-  }).connect(toneReverb);
+  }).connect(boidBus);
 
   beatLength = 60000 / bpm;
   initLineOscillators();
@@ -173,9 +200,9 @@ function initInstrumentButtons() {
 }
 
 function draw() {
-  // --- Dynamic background based on particle colors ---
+// --- Dynamic background based on particle colors ---
+let r = 0, g = 0, b = 0;
 if (particles.length > 0) {
-  let r = 0, g = 0, b = 0;
   for (let p of particles) {
     r += red(p.col);
     g += green(p.col);
@@ -186,11 +213,13 @@ if (particles.length > 0) {
   b = constrain(b / particles.length, 0, 255);
   background(r, g, b, 50); // slight transparency for blending
 } else {
+  r = 0; g = 0; b = 0;
   background(0);
 }
+  lastBgColor = { r, g, b };
 
-  updateAmplitudeHistory();
-  drawAmplitudeWave();
+  updateAmplitudeHistories();
+  drawAmplitudePanels();
 // --- Adjust speed based on slider ---
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
@@ -284,6 +313,7 @@ function drawSegmentStrips() {
 
 function mousePressed() {
   startAudioIfNeeded();
+  combineMorphStart = millis();
   for (let b of boids) {
     if (!toggles[b.type]) continue;
     if (dist(mouseX, mouseY, b.pos.x, b.pos.y) < b.size / 2 + 5) {
@@ -371,7 +401,7 @@ class SoundBoid {
     this.acc = createVector();
     this.type = type;
     this.col = col;
-    this.size = 50;
+    this.size = 30;
     this.baseColor = baseColor;
     this.on = random() < 0.4;
     this.flash = false;
@@ -382,11 +412,15 @@ class SoundBoid {
     this.alignStrength = random(0.75, 1.1);
     this.cohesionStrength = random(0.5, 0.9);
     this.separationStrength = random(0.6, 1.1);
+    this.baseCohesionStrength = this.cohesionStrength;
+    this.baseSeparationStrength = this.separationStrength;
     this.disperseBias = random(0.004, 0.015);
 
     this.home = home.copy();
     this.noiseSeed = random(1000);
     this.angle = random(TWO_PI);
+    this.flowSeed = random(1000);
+    this.flowStrength = random(0.25, 0.55);
   }
 
   update() {
@@ -417,19 +451,24 @@ class SoundBoid {
   // === MOVEMENT FORCES ===
   // keeps instruments clustered but fluid
   flock(others) {
-    const perception = 80;
+    const blend = getCombineFactor();
+    const perception = lerp(80, 140, blend);
     const neighbors = this.computeNeighborhood(others, perception);
     const envForce = this.environmentalForces(neighbors.count);
+    const cohStrength = lerp(this.baseCohesionStrength, this.baseCohesionStrength * 1.8, blend);
+    const sepStrength = lerp(this.baseSeparationStrength, this.baseSeparationStrength * 0.2, blend);
+    const closePushStrength = lerp(0.6, 1.2, blend); // keep some personal space when joining
 
     let flockForce = createVector();
     if (neighbors.count > 0) {
       neighbors.align.div(neighbors.count).setMag(this.maxSpeed);
-      neighbors.cohesion.div(neighbors.count).sub(this.pos).setMag(0.05);
-      neighbors.separation.div(neighbors.count).setMag(0.35);
+      neighbors.cohesion.div(neighbors.count).sub(this.pos).setMag(0.05 * cohStrength / this.baseCohesionStrength);
+      neighbors.separation.div(neighbors.count).setMag(0.35 * sepStrength / this.baseSeparationStrength);
 
       flockForce = p5.Vector.add(neighbors.align.mult(this.alignStrength))
-        .add(neighbors.cohesion.mult(this.cohesionStrength))
-        .add(neighbors.separation.mult(this.separationStrength));
+        .add(neighbors.cohesion.mult(cohStrength))
+        .add(neighbors.separation.mult(sepStrength))
+        .add(neighbors.closePush.mult(closePushStrength));
     }
 
     this.acc.lerp(flockForce.add(envForce), 0.12);
@@ -440,7 +479,8 @@ class SoundBoid {
       count: 0,
       align: createVector(),
       cohesion: createVector(),
-      separation: createVector()
+      separation: createVector(),
+      closePush: createVector()
     };
 
     for (let other of others) {
@@ -453,6 +493,12 @@ class SoundBoid {
         diff.div(Math.max(d * d, 0.001));
         data.separation.add(diff);
         data.count++;
+
+        const personal = this.size;
+        if (d < personal && d > 0.001) {
+          let push = p5.Vector.sub(this.pos, other.pos).normalize().mult((personal - d) / personal);
+          data.closePush.add(push);
+        }
       }
     }
 
@@ -476,7 +522,19 @@ class SoundBoid {
     force.add(p5.Vector.sub(this.pos, this.home).setMag(this.disperseBias));
     force.add(p5.Vector.sub(this.pos, centerVec).setMag(0.003));
 
+    force.add(this.wavyFlow());
+
     return force;
+  }
+
+  wavyFlow() {
+    const t = millis() * 0.001;
+    const wave = sin(t * 0.8 + this.flowSeed * 10) * this.flowStrength;
+    const heading = this.vel.magSq() > 0.0001 ? this.vel.heading() : this.angle;
+    const sideForce = p5.Vector.fromAngle(heading + HALF_PI).setMag(wave * 0.05);
+    const driftAngle = noise(this.flowSeed + t * 0.2) * TWO_PI;
+    const driftForce = p5.Vector.fromAngle(driftAngle).mult(0.015 * this.flowStrength);
+    return sideForce.add(driftForce);
   }
 
   display() {
@@ -546,45 +604,92 @@ class Particle {
   }
 }
 
-function updateAmplitudeHistory() {
-  if (!masterMeter) return;
-  let level = masterMeter.getValue();
-  if (!isFinite(level)) level = -Infinity;
-  let normalized = map(level, -60, 0, 0, 1);
-  normalized = constrain(normalized, 0, 1);
-  ampHistory.push(normalized);
-  if (ampHistory.length > AMP_HISTORY_LEN) ampHistory.shift();
+function updateAmplitudeHistories() {
+  const readMeter = (m) => {
+    if (!m) return 0;
+    let level = m.getValue();
+    if (!isFinite(level)) level = -Infinity;
+    return constrain(map(level, -60, 0, 0, 1), 0, 1);
+  };
+
+  const pushHist = (hist, val) => {
+    hist.push(val);
+    if (hist.length > AMP_HISTORY_LEN) hist.shift();
+  };
+
+  pushHist(ampHistoryBoid, readMeter(boidMeter));
+  pushHist(ampHistoryX, readMeter(lineXMeter));
+  pushHist(ampHistoryY, readMeter(lineYMeter));
+  pushHist(ampHistoryUnion, readMeter(masterMeter));
 }
 
-function drawAmplitudeWave() {
-  if (ampHistory.length < 2) return;
-  push();
-  noFill();
-  let centerY = height / 2;
-  strokeWeight(2);
+function drawAmplitudePanels() {
+  const panels = [
+    { label: "X Segments", hist: ampHistoryX, color: color(255, 0, 0) },
+    { label: "Y Segments", hist: ampHistoryY, color: color(0, 180, 255) },
+    { label: "Boids", hist: ampHistoryBoid, color: complementary(color(lastBgColor.r, lastBgColor.g, lastBgColor.b)) }
+  ];
+  const w = 240;
+  const h = 110;
+  const pad = 10;
+  const spacing = 12;
+  const startX = width - w - 24;
+  const startY = 24;
 
-  stroke(255, 90);
-  beginShape();
-  for (let i = 0; i < ampHistory.length; i++) {
-    let x = map(i, 0, ampHistory.length - 1, 0, width);
-    let amp = ampHistory[i];
-    let wobble = sin(frameCount * 0.015 + i * 0.12) * 8;
-    let displacement = (amp - 0.2) * 140;
-    vertex(x, centerY - displacement + wobble);
-  }
-  endShape();
+  panels.forEach((panel, idx) => {
+    if (panel.hist.length < 2) return;
+    const x0 = startX;
+    const y0 = startY + idx * (h + spacing);
+    push();
+    translate(x0, y0);
 
-  stroke(255, 60);
-  beginShape();
-  for (let i = 0; i < ampHistory.length; i++) {
-    let x = map(i, 0, ampHistory.length - 1, 0, width);
-    let amp = ampHistory[i];
-    let wobble = sin(frameCount * 0.015 + i * 0.12 + PI) * 8;
-    let displacement = (amp - 0.2) * 140;
-    vertex(x, centerY + displacement - wobble);
-  }
-  endShape();
-  pop();
+    noStroke();
+    fill(0, 0, 0, 170);
+    rect(0, 0, w, h);
+    stroke(red(panel.color), green(panel.color), blue(panel.color), 160);
+    noFill();
+    rect(0, 0, w, h);
+
+    translate(pad, pad);
+    const innerW = w - pad * 2;
+    const innerH = h - pad * 2;
+    let centerY = innerH / 2;
+    strokeWeight(2);
+
+    // main wave
+    stroke(panel.color);
+    beginShape();
+    for (let i = 0; i < panel.hist.length; i++) {
+      let x = map(i, 0, panel.hist.length - 1, 0, innerW);
+      let amp = panel.hist[i];
+      let wobble = sin(frameCount * 0.015 + i * 0.12) * 3;
+      let displacement = (amp - 0.2) * (innerH * 0.6);
+      vertex(x, centerY - displacement + wobble);
+    }
+    endShape();
+
+    // faint union overlay
+    if (ampHistoryUnion.length > 1) {
+      stroke(255, 128);
+      beginShape();
+      for (let i = 0; i < ampHistoryUnion.length; i++) {
+        let x = map(i, 0, ampHistoryUnion.length - 1, 0, innerW);
+        let amp = ampHistoryUnion[i];
+        let wobble = sin(frameCount * 0.015 + i * 0.12 + PI) * 2;
+        let displacement = (amp - 0.2) * (innerH * 0.6);
+        vertex(x, centerY + displacement - wobble);
+      }
+      endShape();
+    }
+
+    // label
+    noStroke();
+    fill(255);
+    textSize(12);
+    textAlign(LEFT, TOP);
+    text(panel.label, 0, -pad + 2);
+    pop();
+  });
 }
 
 function drawHarmonicLines(lineX, lineY) {
@@ -620,11 +725,11 @@ function initLineOscillators() {
   lineOscillatorsV = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
     oscillator: { type: lineWaveform },
     envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
-  }).connect(toneReverb));
+  }).connect(lineYBus));
   lineOscillatorsH = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
     oscillator: { type: lineWaveform },
     envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
-  }).connect(toneReverb));
+  }).connect(lineXBus));
 }
 
 function updateLineWaveforms() {
@@ -633,7 +738,7 @@ function updateLineWaveforms() {
 }
 
 function checkVerticalTriggers(activeBoids, lineX) {
-  if (!toneStarted || !lineOscillatorsV.length) return;
+  if (!toneStarted || !lineOscillatorsH.length) return;
   const segH = height / LINE_SEGMENTS;
   const occupancy = Array(LINE_SEGMENTS).fill(0);
 
@@ -641,8 +746,10 @@ function checkVerticalTriggers(activeBoids, lineX) {
     if (!b.prevPos) continue;
     const prevX = b.prevPos.x;
     const currX = b.pos.x;
+    if (Math.abs(currX - prevX) > width * 0.5) continue; // skip wrap teleports
     const crossed = (prevX - lineX) * (currX - lineX) <= 0;
-    const near = Math.abs(currX - lineX) <= b.size * 0.55;
+    const nearBand = b.size * 0.4;
+    const near = Math.abs(currX - lineX) <= nearBand && Math.abs(prevX - lineX) <= nearBand;
     if (!crossed && !near) continue;
 
     const denom = (currX - prevX);
@@ -655,18 +762,18 @@ function checkVerticalTriggers(activeBoids, lineX) {
 
   for (let i = 0; i < LINE_SEGMENTS; i++) {
     const activeNow = occupancy[i] > 0;
-    if (activeNow && !segmentActiveV[i]) {
-      startSegmentSound("V", i);
-      segmentActiveV[i] = true;
-    } else if (!activeNow && segmentActiveV[i]) {
-      stopSegmentSound("V", i);
-      segmentActiveV[i] = false;
+    if (activeNow && !segmentActiveH[i]) {
+      startSegmentSound("H", i); // vertical crossing drives horizontal response
+      segmentActiveH[i] = true;
+    } else if (!activeNow && segmentActiveH[i]) {
+      stopSegmentSound("H", i);
+      segmentActiveH[i] = false;
     }
   }
 }
 
 function checkHorizontalTriggers(activeBoids, lineY) {
-  if (!toneStarted || !lineOscillatorsH.length) return;
+  if (!toneStarted || !lineOscillatorsV.length) return;
   const segW = width / LINE_SEGMENTS;
   const occupancy = Array(LINE_SEGMENTS).fill(0);
 
@@ -674,8 +781,10 @@ function checkHorizontalTriggers(activeBoids, lineY) {
     if (!b.prevPos) continue;
     const prevY = b.prevPos.y;
     const currY = b.pos.y;
+    if (Math.abs(currY - prevY) > height * 0.5) continue; // skip wrap teleports
     const crossed = (prevY - lineY) * (currY - lineY) <= 0;
-    const near = Math.abs(currY - lineY) <= b.size * 0.55;
+    const nearBand = b.size * 0.4;
+    const near = Math.abs(currY - lineY) <= nearBand && Math.abs(prevY - lineY) <= nearBand;
     if (!crossed && !near) continue;
 
     const denom = (currY - prevY);
@@ -688,12 +797,12 @@ function checkHorizontalTriggers(activeBoids, lineY) {
 
   for (let i = 0; i < LINE_SEGMENTS; i++) {
     const activeNow = occupancy[i] > 0;
-    if (activeNow && !segmentActiveH[i]) {
-      startSegmentSound("H", i);
-      segmentActiveH[i] = true;
-    } else if (!activeNow && segmentActiveH[i]) {
-      stopSegmentSound("H", i);
-      segmentActiveH[i] = false;
+    if (activeNow && !segmentActiveV[i]) {
+      startSegmentSound("V", i); // horizontal crossing drives vertical response
+      segmentActiveV[i] = true;
+    } else if (!activeNow && segmentActiveV[i]) {
+      stopSegmentSound("V", i);
+      segmentActiveV[i] = false;
     }
   }
 }
@@ -750,6 +859,11 @@ function updateLineInfoPanel(lineX) {
       .filter(v => v !== null) : [];
     infoPlayingHEl.textContent = playing.length ? playing.join(", ") : "None";
   }
+}
+
+function getCombineFactor() {
+  if (combineMorphStart === null) return 0;
+  return constrain((millis() - combineMorphStart) / COMBINE_MORPH_DURATION, 0, 1);
 }
 
 function findMixedInstrumentClusters(activeBoids) {
