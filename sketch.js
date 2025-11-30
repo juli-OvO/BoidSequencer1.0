@@ -9,12 +9,15 @@ let bpm = 120;
 let beatLength;
 let accum = 0;
 let speedSlider;
+let clusterToggle;
 let centerVec;
 let masterMeter;
 let ampHistory = [];
 const AMP_HISTORY_LEN = 240;
 const SIGNATURE_STEPS = 8;
 let pianoSchedule = [];
+let showClusterBoxes = true;
+const CLUSTER_RADIUS = 140;
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -29,6 +32,11 @@ function setup() {
   frameRate(30);
   noStroke();
   speedSlider = document.getElementById("speed-slider");
+  clusterToggle = document.getElementById("cluster-toggle");
+  if (clusterToggle) {
+    clusterToggle.checked = showClusterBoxes;
+    clusterToggle.addEventListener("change", e => showClusterBoxes = e.target.checked);
+  }
   centerVec = createVector(width / 2, height / 2);
 
   // instrument regions (home zones)
@@ -139,10 +147,24 @@ for (let b of boids) {
 
 
   // update/draw boids
-  for (let b of boids) {
-    if (!toggles[b.type]) continue;
-    b.flock(boids.filter(o => o.type === b.type));
+  const activeBoids = boids.filter(b => toggles[b.type]);
+  const boidsByType = activeBoids.reduce((map, b) => {
+    if (!map[b.type]) map[b.type] = [];
+    map[b.type].push(b);
+    return map;
+  }, {});
+
+  for (let b of activeBoids) {
+    b.flock(boidsByType[b.type]);
     b.update();
+  }
+
+  if (showClusterBoxes) {
+    const clusters = findMixedInstrumentClusters(activeBoids);
+    drawClusterBoxes(clusters);
+  }
+
+  for (let b of activeBoids) {
     b.display();
   }
 
@@ -470,6 +492,77 @@ function drawAmplitudeWave() {
     vertex(x, centerY + displacement - wobble);
   }
   endShape();
+  pop();
+}
+
+function findMixedInstrumentClusters(activeBoids) {
+  const clusters = [];
+  const visited = new Set();
+
+  for (let i = 0; i < activeBoids.length; i++) {
+    if (visited.has(i)) continue;
+    const queue = [i];
+    const members = [];
+    const types = new Set();
+
+    while (queue.length) {
+      const idx = queue.pop();
+      if (visited.has(idx)) continue;
+      visited.add(idx);
+
+      const b = activeBoids[idx];
+      members.push(b);
+      types.add(b.type);
+
+      for (let j = 0; j < activeBoids.length; j++) {
+        if (visited.has(j)) continue;
+        const other = activeBoids[j];
+        if (dist(b.pos.x, b.pos.y, other.pos.x, other.pos.y) < CLUSTER_RADIUS) {
+          queue.push(j);
+        }
+      }
+    }
+
+    if (types.size > 1 && members.length >= 3) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let m of members) {
+        minX = Math.min(minX, m.pos.x - m.size * 0.6);
+        minY = Math.min(minY, m.pos.y - m.size * 0.6);
+        maxX = Math.max(maxX, m.pos.x + m.size * 0.6);
+        maxY = Math.max(maxY, m.pos.y + m.size * 0.6);
+      }
+      clusters.push({ minX, minY, maxX, maxY, types });
+    }
+  }
+
+  return clusters;
+}
+
+function drawClusterBoxes(clusters) {
+  if (!clusters.length) return;
+  push();
+  strokeWeight(2);
+  for (let box of clusters) {
+    const pad = 14;
+    let x = constrain(box.minX - pad, 0, width);
+    let y = constrain(box.minY - pad, 0, height);
+    let w = constrain(box.maxX - box.minX + pad * 2, 0, width - x);
+    let h = constrain(box.maxY - box.minY + pad * 2, 0, height - y);
+
+    stroke(255, 180);
+    fill(255, 25);
+    rect(x, y, w, h, 12);
+
+    const label = Array.from(box.types).join(" + ");
+    if (label) {
+      noStroke();
+      fill(255, 210);
+      textSize(12);
+      textAlign(LEFT, BOTTOM);
+      const ty = y - 6 < 12 ? y + h + 14 : y - 6;
+      text(label, x + 10, ty);
+    }
+  }
   pop();
 }
 
