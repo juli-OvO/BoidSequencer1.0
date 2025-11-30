@@ -10,6 +10,8 @@ let beatLength;
 let accum = 0;
 let speedSlider;
 let clusterToggle;
+let linePosSlider, ratioSlider, waveSelect;
+let logEntriesEl;
 let centerVec;
 let masterMeter;
 let ampHistory = [];
@@ -18,6 +20,14 @@ const SIGNATURE_STEPS = 8;
 let pianoSchedule = [];
 let showClusterBoxes = true;
 const CLUSTER_RADIUS = 140;
+const LINE_SEGMENTS = 64;
+const LINE_REF_FREQ = 220;
+let lineXRatio = 0.5;
+let freqRatio = 1.059463;
+let lineWaveform = "sine";
+let lineOscillators = [];
+let segmentActive = [];
+let segmentLog = [];
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -33,9 +43,28 @@ function setup() {
   noStroke();
   speedSlider = document.getElementById("speed-slider");
   clusterToggle = document.getElementById("cluster-toggle");
+  linePosSlider = document.getElementById("line-pos-slider");
+  ratioSlider = document.getElementById("ratio-slider");
+  waveSelect = document.getElementById("wave-select");
+  logEntriesEl = document.getElementById("log-entries");
   if (clusterToggle) {
     clusterToggle.checked = showClusterBoxes;
     clusterToggle.addEventListener("change", e => showClusterBoxes = e.target.checked);
+  }
+  if (linePosSlider) {
+    linePosSlider.value = lineXRatio * 100;
+    linePosSlider.addEventListener("input", e => lineXRatio = constrain(parseFloat(e.target.value) / 100, 0, 1));
+  }
+  if (ratioSlider) {
+    ratioSlider.value = freqRatio;
+    ratioSlider.addEventListener("input", e => freqRatio = constrain(parseFloat(e.target.value), 1.0, 1.5));
+  }
+  if (waveSelect) {
+    waveSelect.value = lineWaveform;
+    waveSelect.addEventListener("change", e => {
+      lineWaveform = e.target.value;
+      updateLineWaveforms();
+    });
   }
   centerVec = createVector(width / 2, height / 2);
 
@@ -102,6 +131,7 @@ function setup() {
   }).connect(toneReverb);
 
   beatLength = 60000 / bpm;
+  initLineOscillators();
 
   initInstrumentButtons();
 }
@@ -139,6 +169,7 @@ if (particles.length > 0) {
 // --- Adjust speed based on slider ---
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
+let lineX = width * lineXRatio;
 
 // scale boid motion
 for (let b of boids) {
@@ -155,14 +186,19 @@ for (let b of boids) {
   }, {});
 
   for (let b of activeBoids) {
+    b.storePrev();
     b.flock(boidsByType[b.type]);
     b.update();
   }
+
+  checkLineTriggers(activeBoids, lineX);
 
   if (showClusterBoxes) {
     const clusters = findMixedInstrumentClusters(activeBoids);
     drawClusterBoxes(clusters);
   }
+
+  drawHarmonicLine(lineX);
 
   for (let b of activeBoids) {
     b.display();
@@ -288,6 +324,7 @@ class SoundBoid {
     this.baseColor = baseColor;
     this.on = random() < 0.4;
     this.flash = false;
+    this.prevPos = this.pos.copy();
 
     // individual personality
     this.maxSpeed = random(0.9, 2.2);
@@ -320,6 +357,10 @@ class SoundBoid {
     if (this.pos.x > width) this.pos.x = 0;
     if (this.pos.y < 0) this.pos.y = height;
     if (this.pos.y > height) this.pos.y = 0;
+  }
+
+  storePrev() {
+    this.prevPos = this.pos.copy();
   }
 
   // === MOVEMENT FORCES ===
@@ -493,6 +534,92 @@ function drawAmplitudeWave() {
   }
   endShape();
   pop();
+}
+
+function drawHarmonicLine(lineX) {
+  const segH = height / LINE_SEGMENTS;
+  push();
+  stroke(255, 0, 0);
+  strokeWeight(2);
+  line(lineX, 0, lineX, height);
+  strokeWeight(1);
+  for (let i = 0; i <= LINE_SEGMENTS; i++) {
+    const y = i * segH;
+    line(lineX - 6, y, lineX + 6, y);
+  }
+  pop();
+}
+
+function initLineOscillators() {
+  segmentActive = Array(LINE_SEGMENTS).fill(false);
+  lineOscillators = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
+    oscillator: { type: lineWaveform },
+    envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
+  }).connect(toneReverb));
+}
+
+function updateLineWaveforms() {
+  for (let osc of lineOscillators) {
+    if (osc) osc.oscillator.type = lineWaveform;
+  }
+}
+
+function checkLineTriggers(activeBoids, lineX) {
+  if (!toneStarted || !lineOscillators.length) return;
+  const segH = height / LINE_SEGMENTS;
+  const occupancy = Array(LINE_SEGMENTS).fill(0);
+
+  for (let b of activeBoids) {
+    if (!b.prevPos) continue;
+    const prevX = b.prevPos.x;
+    const currX = b.pos.x;
+    const crossed = (prevX - lineX) * (currX - lineX) <= 0;
+    const near = Math.abs(currX - lineX) <= b.size * 0.55;
+    if (!crossed && !near) continue;
+
+    const denom = (currX - prevX);
+    const t = denom === 0 ? 0.5 : constrain((lineX - prevX) / denom, 0, 1);
+    const yCross = b.prevPos.y + t * (b.pos.y - b.prevPos.y);
+    if (yCross < 0 || yCross > height) continue;
+    const idx = constrain(floor(yCross / segH), 0, LINE_SEGMENTS - 1);
+    occupancy[idx] += 1;
+  }
+
+  for (let i = 0; i < LINE_SEGMENTS; i++) {
+    const activeNow = occupancy[i] > 0;
+    if (activeNow && !segmentActive[i]) {
+      startSegmentSound(i);
+      segmentActive[i] = true;
+    } else if (!activeNow && segmentActive[i]) {
+      stopSegmentSound(i);
+      segmentActive[i] = false;
+    }
+  }
+}
+
+function startSegmentSound(idx) {
+  const synth = lineOscillators[idx];
+  if (!synth) return;
+  const offset = idx - floor(LINE_SEGMENTS / 2);
+  const freq = LINE_REF_FREQ * Math.pow(freqRatio, offset);
+  synth.oscillator.type = lineWaveform;
+  synth.triggerAttack(freq, undefined, 0.35);
+  addSegmentLog(idx, freq);
+}
+
+function stopSegmentSound(idx) {
+  const synth = lineOscillators[idx];
+  if (!synth) return;
+  synth.triggerRelease();
+}
+
+function addSegmentLog(idx, freq) {
+  const entry = `Seg ${idx + 1} : ${freq.toFixed(1)} Hz`;
+  segmentLog.unshift(entry);
+  if (segmentLog.length > 12) segmentLog.pop();
+  if (logEntriesEl) {
+    logEntriesEl.innerHTML = segmentLog.map(t => `<div class="log-entry"><span>${t}</span></div>`).join("");
+  }
 }
 
 function findMixedInstrumentClusters(activeBoids) {
