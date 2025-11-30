@@ -10,8 +10,10 @@ let beatLength;
 let accum = 0;
 let speedSlider;
 let clusterToggle;
-let linePosSlider, ratioSlider, waveSelect;
+let linePosSlider, lineYSlider, ratioSlider, waveSelect;
+let lineSoundBtn;
 let logEntriesEl;
+let infoLineXEl, infoLineYEl, infoRatioEl, infoPlayingVEl, infoPlayingHEl;
 let centerVec;
 let masterMeter;
 let ampHistory = [];
@@ -23,11 +25,15 @@ const CLUSTER_RADIUS = 140;
 const LINE_SEGMENTS = 64;
 const LINE_REF_FREQ = 220;
 let lineXRatio = 0.5;
+let lineYRatio = 0.5;
 let freqRatio = 1.059463;
 let lineWaveform = "sine";
-let lineOscillators = [];
-let segmentActive = [];
+let lineOscillatorsV = [];
+let lineOscillatorsH = [];
+let segmentActiveV = [];
+let segmentActiveH = [];
 let segmentLog = [];
+let lineSoundEnabled = true;
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -44,9 +50,16 @@ function setup() {
   speedSlider = document.getElementById("speed-slider");
   clusterToggle = document.getElementById("cluster-toggle");
   linePosSlider = document.getElementById("line-pos-slider");
+  lineYSlider = document.getElementById("line-y-slider");
   ratioSlider = document.getElementById("ratio-slider");
   waveSelect = document.getElementById("wave-select");
+  lineSoundBtn = document.getElementById("line-sound-btn");
   logEntriesEl = document.getElementById("log-entries");
+  infoLineXEl = document.getElementById("info-line-x");
+  infoLineYEl = document.getElementById("info-line-y");
+  infoRatioEl = document.getElementById("info-ratio");
+  infoPlayingVEl = document.getElementById("info-playing-v");
+  infoPlayingHEl = document.getElementById("info-playing-h");
   if (clusterToggle) {
     clusterToggle.checked = showClusterBoxes;
     clusterToggle.addEventListener("change", e => showClusterBoxes = e.target.checked);
@@ -54,6 +67,10 @@ function setup() {
   if (linePosSlider) {
     linePosSlider.value = lineXRatio * 100;
     linePosSlider.addEventListener("input", e => lineXRatio = constrain(parseFloat(e.target.value) / 100, 0, 1));
+  }
+  if (lineYSlider) {
+    lineYSlider.value = lineYRatio * 100;
+    lineYSlider.addEventListener("input", e => lineYRatio = constrain(parseFloat(e.target.value) / 100, 0, 1));
   }
   if (ratioSlider) {
     ratioSlider.value = freqRatio;
@@ -64,6 +81,14 @@ function setup() {
     waveSelect.addEventListener("change", e => {
       lineWaveform = e.target.value;
       updateLineWaveforms();
+    });
+  }
+  if (lineSoundBtn) {
+    lineSoundBtn.addEventListener("click", () => {
+      lineSoundEnabled = !lineSoundEnabled;
+      lineSoundBtn.textContent = `Line Sound: ${lineSoundEnabled ? "ON" : "OFF"}`;
+      lineSoundBtn.classList.toggle("off", !lineSoundEnabled);
+      if (!lineSoundEnabled) stopAllSegments();
     });
   }
   centerVec = createVector(width / 2, height / 2);
@@ -170,6 +195,7 @@ if (particles.length > 0) {
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
 let lineX = width * lineXRatio;
+let lineY = height * lineYRatio;
 
 // scale boid motion
 for (let b of boids) {
@@ -191,14 +217,17 @@ for (let b of boids) {
     b.update();
   }
 
-  checkLineTriggers(activeBoids, lineX);
+  checkVerticalTriggers(activeBoids, lineX);
+  checkHorizontalTriggers(activeBoids, lineY);
 
   if (showClusterBoxes) {
     const clusters = findMixedInstrumentClusters(activeBoids);
     drawClusterBoxes(clusters);
   }
 
-  drawHarmonicLine(lineX);
+  drawSegmentStrips();
+  drawHarmonicLines(lineX, lineY);
+  updateLineInfoPanel(lineX);
 
   for (let b of activeBoids) {
     b.display();
@@ -229,6 +258,28 @@ function keyPressed() {
     playing = !playing;
     accum = 0;
   }
+}
+
+function drawSegmentStrips() {
+  // vertical stripes reacting to vertical line segments
+  const stripW = width / LINE_SEGMENTS;
+  push();
+  noStroke();
+  for (let i = 0; i < LINE_SEGMENTS; i++) {
+    if (segmentActiveV[i]) {
+      fill(255, 255, 255, 40);
+      rect(i * stripW, 0, stripW, height);
+    }
+  }
+  // horizontal stripes reacting to horizontal line segments
+  const stripH = height / LINE_SEGMENTS;
+  for (let i = 0; i < LINE_SEGMENTS; i++) {
+    if (segmentActiveH[i]) {
+      fill(255, 255, 255, 40);
+      rect(0, i * stripH, width, stripH);
+    }
+  }
+  pop();
 }
 
 function mousePressed() {
@@ -536,36 +587,53 @@ function drawAmplitudeWave() {
   pop();
 }
 
-function drawHarmonicLine(lineX) {
+function drawHarmonicLines(lineX, lineY) {
   const segH = height / LINE_SEGMENTS;
+  const segW = width / LINE_SEGMENTS;
   push();
-  stroke(255, 0, 0);
   strokeWeight(2);
+
+  // vertical line
+  stroke(255, 0, 0);
   line(lineX, 0, lineX, height);
   strokeWeight(1);
   for (let i = 0; i <= LINE_SEGMENTS; i++) {
     const y = i * segH;
     line(lineX - 6, y, lineX + 6, y);
   }
+
+  // horizontal line
+  stroke(0, 180, 255);
+  strokeWeight(2);
+  line(0, lineY, width, lineY);
+  strokeWeight(1);
+  for (let i = 0; i <= LINE_SEGMENTS; i++) {
+    const x = i * segW;
+    line(x, lineY - 6, x, lineY + 6);
+  }
   pop();
 }
 
 function initLineOscillators() {
-  segmentActive = Array(LINE_SEGMENTS).fill(false);
-  lineOscillators = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
+  segmentActiveV = Array(LINE_SEGMENTS).fill(false);
+  segmentActiveH = Array(LINE_SEGMENTS).fill(false);
+  lineOscillatorsV = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
+    oscillator: { type: lineWaveform },
+    envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
+  }).connect(toneReverb));
+  lineOscillatorsH = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
     oscillator: { type: lineWaveform },
     envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
   }).connect(toneReverb));
 }
 
 function updateLineWaveforms() {
-  for (let osc of lineOscillators) {
-    if (osc) osc.oscillator.type = lineWaveform;
-  }
+  for (let osc of lineOscillatorsV) if (osc) osc.oscillator.type = lineWaveform;
+  for (let osc of lineOscillatorsH) if (osc) osc.oscillator.type = lineWaveform;
 }
 
-function checkLineTriggers(activeBoids, lineX) {
-  if (!toneStarted || !lineOscillators.length) return;
+function checkVerticalTriggers(activeBoids, lineX) {
+  if (!toneStarted || !lineOscillatorsV.length) return;
   const segH = height / LINE_SEGMENTS;
   const occupancy = Array(LINE_SEGMENTS).fill(0);
 
@@ -587,38 +655,100 @@ function checkLineTriggers(activeBoids, lineX) {
 
   for (let i = 0; i < LINE_SEGMENTS; i++) {
     const activeNow = occupancy[i] > 0;
-    if (activeNow && !segmentActive[i]) {
-      startSegmentSound(i);
-      segmentActive[i] = true;
-    } else if (!activeNow && segmentActive[i]) {
-      stopSegmentSound(i);
-      segmentActive[i] = false;
+    if (activeNow && !segmentActiveV[i]) {
+      startSegmentSound("V", i);
+      segmentActiveV[i] = true;
+    } else if (!activeNow && segmentActiveV[i]) {
+      stopSegmentSound("V", i);
+      segmentActiveV[i] = false;
     }
   }
 }
 
-function startSegmentSound(idx) {
-  const synth = lineOscillators[idx];
-  if (!synth) return;
+function checkHorizontalTriggers(activeBoids, lineY) {
+  if (!toneStarted || !lineOscillatorsH.length) return;
+  const segW = width / LINE_SEGMENTS;
+  const occupancy = Array(LINE_SEGMENTS).fill(0);
+
+  for (let b of activeBoids) {
+    if (!b.prevPos) continue;
+    const prevY = b.prevPos.y;
+    const currY = b.pos.y;
+    const crossed = (prevY - lineY) * (currY - lineY) <= 0;
+    const near = Math.abs(currY - lineY) <= b.size * 0.55;
+    if (!crossed && !near) continue;
+
+    const denom = (currY - prevY);
+    const t = denom === 0 ? 0.5 : constrain((lineY - prevY) / denom, 0, 1);
+    const xCross = b.prevPos.x + t * (b.pos.x - b.prevPos.x);
+    if (xCross < 0 || xCross > width) continue;
+    const idx = constrain(floor(xCross / segW), 0, LINE_SEGMENTS - 1);
+    occupancy[idx] += 1;
+  }
+
+  for (let i = 0; i < LINE_SEGMENTS; i++) {
+    const activeNow = occupancy[i] > 0;
+    if (activeNow && !segmentActiveH[i]) {
+      startSegmentSound("H", i);
+      segmentActiveH[i] = true;
+    } else if (!activeNow && segmentActiveH[i]) {
+      stopSegmentSound("H", i);
+      segmentActiveH[i] = false;
+    }
+  }
+}
+
+function startSegmentSound(orientation, idx) {
+  const synthArray = orientation === "V" ? lineOscillatorsV : lineOscillatorsH;
+  const synth = synthArray[idx];
+  if (!synth || !lineSoundEnabled) return;
   const offset = idx - floor(LINE_SEGMENTS / 2);
   const freq = LINE_REF_FREQ * Math.pow(freqRatio, offset);
   synth.oscillator.type = lineWaveform;
   synth.triggerAttack(freq, undefined, 0.35);
-  addSegmentLog(idx, freq);
+  addSegmentLog(orientation, idx, freq);
 }
 
-function stopSegmentSound(idx) {
-  const synth = lineOscillators[idx];
+function stopSegmentSound(orientation, idx) {
+  const synthArray = orientation === "V" ? lineOscillatorsV : lineOscillatorsH;
+  const synth = synthArray[idx];
   if (!synth) return;
   synth.triggerRelease();
 }
 
-function addSegmentLog(idx, freq) {
-  const entry = `Seg ${idx + 1} : ${freq.toFixed(1)} Hz`;
+function stopAllSegments() {
+  for (let i = 0; i < LINE_SEGMENTS; i++) {
+    if (segmentActiveV[i]) stopSegmentSound("V", i);
+    if (segmentActiveH[i]) stopSegmentSound("H", i);
+    segmentActiveV[i] = false;
+    segmentActiveH[i] = false;
+  }
+}
+
+function addSegmentLog(orientation, idx, freq) {
+  const entry = `${orientation} Seg ${idx + 1} : ${freq.toFixed(1)} Hz`;
   segmentLog.unshift(entry);
   if (segmentLog.length > 12) segmentLog.pop();
   if (logEntriesEl) {
     logEntriesEl.innerHTML = segmentLog.map(t => `<div class="log-entry"><span>${t}</span></div>`).join("");
+  }
+}
+
+function updateLineInfoPanel(lineX) {
+  if (infoLineXEl) infoLineXEl.textContent = `${Math.round(lineX)}`;
+  if (infoLineYEl) infoLineYEl.textContent = `${Math.round(lineYRatio * height)}`;
+  if (infoRatioEl) infoRatioEl.textContent = freqRatio.toFixed(6);
+  if (infoPlayingVEl) {
+    const playing = lineSoundEnabled ? segmentActiveV
+      .map((on, idx) => on ? idx + 1 : null)
+      .filter(v => v !== null) : [];
+    infoPlayingVEl.textContent = playing.length ? playing.join(", ") : "None";
+  }
+  if (infoPlayingHEl) {
+    const playing = lineSoundEnabled ? segmentActiveH
+      .map((on, idx) => on ? idx + 1 : null)
+      .filter(v => v !== null) : [];
+    infoPlayingHEl.textContent = playing.length ? playing.join(", ") : "None";
   }
 }
 
@@ -677,8 +807,8 @@ function drawClusterBoxes(clusters) {
     let h = constrain(box.maxY - box.minY + pad * 2, 0, height - y);
 
     stroke(255, 180);
-    fill(255, 25);
-    rect(x, y, w, h, 12);
+    noFill();
+    rect(x, y, w, h, 0);
 
     const label = Array.from(box.types).join(" + ");
     if (label) {

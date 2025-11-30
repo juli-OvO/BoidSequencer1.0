@@ -16,6 +16,10 @@
           <input type="range" id="line-pos-slider" min="0" max="100" step="0.1" value="50" />
         </label>
         <label class="field">
+          <span>Line Y</span>
+          <input type="range" id="line-y-slider" min="0" max="100" step="0.1" value="50" />
+        </label>
+        <label class="field">
           <span>Ratio a</span>
           <input type="range" id="ratio-slider" min="1.01" max="1.2" step="0.0005" value="1.059463" />
         </label>
@@ -28,6 +32,7 @@
             <option value="sawtooth">Saw</option>
           </select>
         </label>
+        <button id="line-sound-btn" class="flat-btn">Line Sound: ON</button>
       </div>
       <div id="top-bar">
         <span class="label">Tempo & Motion Speed</span>
@@ -42,6 +47,14 @@
       <div id="segment-log" class="panel log-panel">
         <div class="panel-title">Segment Log</div>
         <div id="log-entries"></div>
+      </div>
+      <div id="line-info" class="panel info-panel">
+        <div class="panel-title">Line Stats</div>
+        <div class="info-row"><span>Line X</span><span id="info-line-x">0</span></div>
+        <div class="info-row"><span>Line Y</span><span id="info-line-y">0</span></div>
+        <div class="info-row"><span>Ratio a</span><span id="info-ratio">0</span></div>
+        <div class="info-row"><span>V-Playing</span><span id="info-playing-v">None</span></div>
+        <div class="info-row"><span>H-Playing</span><span id="info-playing-h">None</span></div>
       </div>
       <div id="bottom-controls">
         <button class="instr-btn" data-type="hihat">Hi-hat /\</button>
