@@ -662,9 +662,8 @@ function drawAmplitudePanels() {
     for (let i = 0; i < panel.hist.length; i++) {
       let x = map(i, 0, panel.hist.length - 1, 0, innerW);
       let amp = panel.hist[i];
-      let wobble = sin(frameCount * 0.015 + i * 0.12) * 3;
       let displacement = (amp - 0.2) * (innerH * 0.6);
-      vertex(x, centerY - displacement + wobble);
+      vertex(x, centerY - displacement);
     }
     endShape();
 
@@ -675,9 +674,8 @@ function drawAmplitudePanels() {
       for (let i = 0; i < ampHistoryUnion.length; i++) {
         let x = map(i, 0, ampHistoryUnion.length - 1, 0, innerW);
         let amp = ampHistoryUnion[i];
-        let wobble = sin(frameCount * 0.015 + i * 0.12 + PI) * 2;
         let displacement = (amp - 0.2) * (innerH * 0.6);
-        vertex(x, centerY + displacement - wobble);
+        vertex(x, centerY + displacement);
       }
       endShape();
     }
