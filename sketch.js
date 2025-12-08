@@ -11,10 +11,12 @@ let accum = 0;
 let speedSlider;
 let clusterToggle;
 let linePosSlider, lineYSlider, ratioSlider, waveSelect;
-let lineSoundBtn;
+let boidSegSoundBtn, lineSegSoundBtn;
 let logEntriesEl;
 let infoLineXEl, infoLineYEl, infoRatioEl, infoPlayingVEl, infoPlayingHEl;
 let joinBtn;
+let regroupBtn;
+let orbCountSlider, orbSpeedSlider, addLineBtn, clearLinesBtn;
 let centerVec;
 let masterMeter;
 let ampHistory = [];
@@ -34,7 +36,6 @@ let lineOscillatorsH = [];
 let segmentActiveV = [];
 let segmentActiveH = [];
 let segmentLog = [];
-let lineSoundEnabled = true;
 let combineMorphStart = null;
 const COMBINE_MORPH_DURATION = 10000;
 let boidBus, lineXBus, lineYBus;
@@ -44,6 +45,17 @@ let ampHistoryX = [];
 let ampHistoryY = [];
 let ampHistoryUnion = [];
 let lastBgColor = { r: 0, g: 0, b: 0 };
+let joinAllMode = false;
+let linePaths = [];
+let pendingLineStart = null;
+let orbCount = 8;
+let orbSpeed = 1;
+let lineDrawMode = false;
+let drawingPoints = [];
+let drawingActive = false;
+let sliderLabelMap = [];
+let lineSoundBoidEnabled = true;
+let lineSoundOrbEnabled = true;
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -63,8 +75,14 @@ function setup() {
   lineYSlider = document.getElementById("line-y-slider");
   ratioSlider = document.getElementById("ratio-slider");
   waveSelect = document.getElementById("wave-select");
-  lineSoundBtn = document.getElementById("line-sound-btn");
+  boidSegSoundBtn = document.getElementById("boid-seg-sound-btn");
+  lineSegSoundBtn = document.getElementById("line-seg-sound-btn");
   joinBtn = document.getElementById("join-btn");
+  regroupBtn = document.getElementById("regroup-btn");
+  orbCountSlider = document.getElementById("orb-count-slider");
+  orbSpeedSlider = document.getElementById("orb-speed-slider");
+  addLineBtn = document.getElementById("add-line-btn");
+  clearLinesBtn = document.getElementById("clear-lines-btn");
   logEntriesEl = document.getElementById("log-entries");
   infoLineXEl = document.getElementById("info-line-x");
   infoLineYEl = document.getElementById("info-line-y");
@@ -94,19 +112,62 @@ function setup() {
       updateLineWaveforms();
     });
   }
-  if (lineSoundBtn) {
-    lineSoundBtn.addEventListener("click", () => {
-      lineSoundEnabled = !lineSoundEnabled;
-      lineSoundBtn.textContent = `Line Sound: ${lineSoundEnabled ? "ON" : "OFF"}`;
-      lineSoundBtn.classList.toggle("off", !lineSoundEnabled);
-      if (!lineSoundEnabled) stopAllSegments();
+  if (boidSegSoundBtn) {
+    boidSegSoundBtn.addEventListener("click", () => {
+      lineSoundBoidEnabled = !lineSoundBoidEnabled;
+      boidSegSoundBtn.textContent = `Boid Segments: ${lineSoundBoidEnabled ? "ON" : "OFF"}`;
+      boidSegSoundBtn.classList.toggle("off", !lineSoundBoidEnabled);
+      if (!lineSoundBoidEnabled && !lineSoundOrbEnabled) stopAllSegments();
+    });
+  }
+  if (lineSegSoundBtn) {
+    lineSegSoundBtn.addEventListener("click", () => {
+      lineSoundOrbEnabled = !lineSoundOrbEnabled;
+      lineSegSoundBtn.textContent = `Line Segments: ${lineSoundOrbEnabled ? "ON" : "OFF"}`;
+      lineSegSoundBtn.classList.toggle("off", !lineSoundOrbEnabled);
+      if (!lineSoundBoidEnabled && !lineSoundOrbEnabled) stopAllSegments();
     });
   }
   if (joinBtn) {
     joinBtn.addEventListener("click", () => {
       combineMorphStart = millis();
+      joinAllMode = true;
     });
   }
+  if (regroupBtn) {
+    regroupBtn.addEventListener("click", () => {
+      joinAllMode = false;
+      combineMorphStart = null;
+    });
+  }
+  if (orbCountSlider) {
+    orbCountSlider.addEventListener("input", e => {
+      orbCount = parseInt(e.target.value, 10) || 1;
+      rebuildAllOrbs();
+    });
+  }
+  if (orbSpeedSlider) {
+    orbSpeedSlider.addEventListener("input", e => {
+      orbSpeed = parseFloat(e.target.value) || 1;
+    });
+  }
+  if (addLineBtn) {
+    addLineBtn.addEventListener("click", () => {
+      pendingLineStart = null;
+      drawingPoints = [];
+      drawingActive = false;
+      lineDrawMode = true;
+      addLineBtn.classList.add("active");
+    });
+  }
+  if (clearLinesBtn) {
+    clearLinesBtn.addEventListener("click", () => {
+      linePaths = [];
+      updateClearBtnState();
+    });
+  }
+  updateClearBtnState();
+  initSliderLabels();
   centerVec = createVector(width / 2, height / 2);
 
   // instrument regions (home zones)
@@ -246,14 +307,19 @@ for (let b of boids) {
     b.update();
   }
 
-  checkVerticalTriggers(activeBoids, lineX);
-  checkHorizontalTriggers(activeBoids, lineY);
+  updateOrbs();
+  const orbActors = collectOrbActors();
+  const movers = activeBoids.concat(orbActors);
+
+  checkVerticalTriggers(movers, lineX);
+  checkHorizontalTriggers(movers, lineY);
 
   if (showClusterBoxes) {
     const clusters = findMixedInstrumentClusters(activeBoids);
     drawClusterBoxes(clusters);
   }
 
+  drawPathsAndOrbs();
   drawSegmentStrips();
   drawHarmonicLines(lineX, lineY);
   updateLineInfoPanel(lineX);
@@ -311,9 +377,169 @@ function drawSegmentStrips() {
   pop();
 }
 
+function mouseDragged() {
+  if (lineDrawMode && drawingActive) {
+    drawingPoints.push(createVector(mouseX, mouseY));
+  }
+}
+
+// ---- USER LINES + ORBITERS ----
+function addLinePathFromPoints(points) {
+  if (!points || points.length < 2) return;
+  const path = {
+    points: points.map(p => p.copy()),
+    lengths: [],
+    totalLength: 0,
+    orbs: []
+  };
+  updatePathMetrics(path);
+  path.orbs = buildOrbsForPath(path);
+  linePaths.push(path);
+  updateClearBtnState();
+}
+
+function updatePathMetrics(path) {
+  path.lengths = [0];
+  let total = 0;
+  for (let i = 1; i < path.points.length; i++) {
+    total += p5.Vector.dist(path.points[i - 1], path.points[i]);
+    path.lengths.push(total);
+  }
+  path.totalLength = total || 1;
+}
+
+function pointOnPath(path, distance) {
+  if (path.points.length === 1) return path.points[0].copy();
+  const d = ((distance % path.totalLength) + path.totalLength) % path.totalLength;
+  let idx = 1;
+  while (idx < path.lengths.length && path.lengths[idx] < d) idx++;
+  const prevIdx = max(0, idx - 1);
+  const segStart = path.points[prevIdx];
+  const segEnd = path.points[idx] || segStart;
+  const segLen = max(0.0001, path.lengths[idx] - path.lengths[prevIdx]);
+  const t = (d - path.lengths[prevIdx]) / segLen;
+  return p5.Vector.lerp(segStart, segEnd, t);
+}
+
+function buildOrbsForPath(path) {
+  const arr = [];
+  for (let i = 0; i < orbCount; i++) {
+    const t = i / orbCount;
+    const dist = path.totalLength * t;
+    const pos = pointOnPath(path, dist);
+    arr.push({ dist, size: 18, pos, prevPos: pos.copy() });
+  }
+  return arr;
+}
+
+function rebuildAllOrbs() {
+  linePaths = linePaths.map(p => {
+    updatePathMetrics(p);
+    return { ...p, orbs: buildOrbsForPath(p) };
+  });
+}
+
+function updateOrbs() {
+  const inc = orbSpeed * deltaTime * 0.25;
+  for (let path of linePaths) {
+    for (let orb of path.orbs) {
+      orb.prevPos = orb.pos.copy();
+      orb.dist = (orb.dist + inc) % path.totalLength;
+      orb.pos = pointOnPath(path, orb.dist);
+    }
+  }
+}
+
+function collectOrbActors() {
+  const list = [];
+  for (let path of linePaths) {
+    for (let orb of path.orbs) {
+      list.push({ pos: orb.pos, prevPos: orb.prevPos, size: orb.size, kind: "orb" });
+    }
+  }
+  return list;
+}
+
+function drawPathPolyline(points) {
+  if (!points || points.length < 2) return;
+  beginShape();
+  for (let p of points) vertex(p.x, p.y);
+  endShape();
+}
+
+function drawPathsAndOrbs() {
+  push();
+  stroke(255, 230, 50, 140);
+  strokeWeight(2);
+  noFill();
+  // existing paths
+  for (let path of linePaths) {
+    drawPathPolyline(path.points);
+    for (let orb of path.orbs) {
+      ellipse(orb.pos.x, orb.pos.y, orb.size);
+    }
+  }
+  // preview
+  if (lineDrawMode && drawingPoints.length > 1) {
+    stroke(255, 230, 50, 200);
+    drawPathPolyline(drawingPoints);
+  }
+  pop();
+}
+
+function updateClearBtnState() {
+  if (!clearLinesBtn) return;
+  clearLinesBtn.classList.toggle("off", linePaths.length === 0);
+}
+
+function initSliderLabels() {
+  const sliders = [
+    { el: speedSlider, format: v => v.toFixed(1) },
+    { el: linePosSlider, format: v => Math.round(v) },
+    { el: lineYSlider, format: v => Math.round(v) },
+    { el: ratioSlider, format: v => Number(v).toFixed(1) },
+    { el: orbCountSlider, format: v => parseInt(v, 10) },
+    { el: orbSpeedSlider, format: v => Number(v).toFixed(1) }
+  ];
+  sliders.forEach(item => {
+    if (!item.el) return;
+    attachSliderLabel(item.el, item.format);
+  });
+}
+
+function attachSliderLabel(input, formatter) {
+  const parent = input.parentElement;
+  if (!parent) return;
+  parent.classList.add("slider-field");
+  input.classList.add("with-label");
+  const label = document.createElement("span");
+  label.className = "slider-label";
+  parent.appendChild(label);
+  const update = () => positionSliderLabel(input, label, formatter);
+  input.addEventListener("input", update);
+  update();
+  sliderLabelMap.push({ input, label, formatter });
+}
+
+function positionSliderLabel(input, label, formatter) {
+  const min = parseFloat(input.min || "0");
+  const max = parseFloat(input.max || "100");
+  const val = parseFloat(input.value || "0");
+  const pct = (val - min) / (max - min || 1);
+  const thumb = 28; // match CSS thumb size
+  const x = pct * Math.max(0, input.offsetWidth - thumb) + thumb / 2;
+  label.style.left = `${x}px`;
+  label.textContent = formatter(val);
+}
+
 function mousePressed() {
   startAudioIfNeeded();
   combineMorphStart = millis();
+  if (lineDrawMode) {
+    drawingPoints = [createVector(mouseX, mouseY)];
+    drawingActive = true;
+    return;
+  }
   for (let b of boids) {
     if (!toggles[b.type]) continue;
     if (dist(mouseX, mouseY, b.pos.x, b.pos.y) < b.size / 2 + 5) {
@@ -321,6 +547,17 @@ function mousePressed() {
       break;
     }
   }
+}
+
+function mouseReleased() {
+  if (lineDrawMode && drawingActive && drawingPoints.length > 1) {
+    drawingPoints.push(createVector(mouseX, mouseY));
+    addLinePathFromPoints(drawingPoints);
+  }
+  drawingPoints = [];
+  drawingActive = false;
+  if (lineDrawMode && addLineBtn) addLineBtn.classList.remove("active");
+  lineDrawMode = false;
 }
 
 function stepBeat() {
@@ -452,12 +689,18 @@ class SoundBoid {
   // keeps instruments clustered but fluid
   flock(others) {
     const blend = getCombineFactor();
-    const perception = lerp(80, 140, blend);
+    const effectiveBlend = joinAllMode ? 1 : blend;
+    const perception = lerp(80, 160, effectiveBlend);
     const neighbors = this.computeNeighborhood(others, perception);
+
     const envForce = this.environmentalForces(neighbors.count);
-    const cohStrength = lerp(this.baseCohesionStrength, this.baseCohesionStrength * 1.8, blend);
-    const sepStrength = lerp(this.baseSeparationStrength, this.baseSeparationStrength * 0.2, blend);
-    const closePushStrength = lerp(0.6, 1.2, blend); // keep some personal space when joining
+    if (joinAllMode) {
+      envForce.add(p5.Vector.sub(centerVec, this.pos).setMag(0.18)); // gentle pull to center while keeping boid flow
+    }
+
+    const cohStrength = lerp(this.baseCohesionStrength, this.baseCohesionStrength * 1.8, effectiveBlend);
+    const sepStrength = lerp(this.baseSeparationStrength, this.baseSeparationStrength * 0.25, effectiveBlend);
+    const closePushStrength = lerp(0.6, 1.2, effectiveBlend); // keep some personal space when joining
 
     let flockForce = createVector();
     if (neighbors.count > 0) {
@@ -625,21 +868,21 @@ function updateAmplitudeHistories() {
 
 function drawAmplitudePanels() {
   const panels = [
-    { label: "X Segments", hist: ampHistoryX, color: color(255, 0, 0) },
-    { label: "Y Segments", hist: ampHistoryY, color: color(0, 180, 255) },
+    { label: "X Segments", hist: ampHistoryX, color: color(255, 230, 50) },
+    { label: "Y Segments", hist: ampHistoryY, color: color(255, 230, 50) },
     { label: "Boids", hist: ampHistoryBoid, color: complementary(color(lastBgColor.r, lastBgColor.g, lastBgColor.b)) }
   ];
   const w = 240;
   const h = 110;
   const pad = 10;
   const spacing = 12;
-  const startX = width - w - 24;
+  const startX = 404;
   const startY = 24;
 
   panels.forEach((panel, idx) => {
     if (panel.hist.length < 2) return;
-    const x0 = startX;
-    const y0 = startY + idx * (h + spacing);
+    const x0 = startX + idx * (w + spacing);
+    const y0 = startY;
     push();
     translate(x0, y0);
 
@@ -693,11 +936,12 @@ function drawAmplitudePanels() {
 function drawHarmonicLines(lineX, lineY) {
   const segH = height / LINE_SEGMENTS;
   const segW = width / LINE_SEGMENTS;
+  const lineColor = color(255, 230, 50);
   push();
   strokeWeight(2);
 
   // vertical line
-  stroke(255, 0, 0);
+  stroke(lineColor);
   line(lineX, 0, lineX, height);
   strokeWeight(1);
   for (let i = 0; i <= LINE_SEGMENTS; i++) {
@@ -706,7 +950,7 @@ function drawHarmonicLines(lineX, lineY) {
   }
 
   // horizontal line
-  stroke(0, 180, 255);
+  stroke(lineColor);
   strokeWeight(2);
   line(0, lineY, width, lineY);
   strokeWeight(1);
@@ -735,12 +979,13 @@ function updateLineWaveforms() {
   for (let osc of lineOscillatorsH) if (osc) osc.oscillator.type = lineWaveform;
 }
 
-function checkVerticalTriggers(activeBoids, lineX) {
+function checkVerticalTriggers(actors, lineX) {
   if (!toneStarted || !lineOscillatorsH.length) return;
   const segH = height / LINE_SEGMENTS;
-  const occupancy = Array(LINE_SEGMENTS).fill(0);
+  const occupancyBoid = Array(LINE_SEGMENTS).fill(0);
+  const occupancyOrb = Array(LINE_SEGMENTS).fill(0);
 
-  for (let b of activeBoids) {
+  for (let b of actors) {
     if (!b.prevPos) continue;
     const prevX = b.prevPos.x;
     const currX = b.pos.x;
@@ -755,11 +1000,12 @@ function checkVerticalTriggers(activeBoids, lineX) {
     const yCross = b.prevPos.y + t * (b.pos.y - b.prevPos.y);
     if (yCross < 0 || yCross > height) continue;
     const idx = constrain(floor(yCross / segH), 0, LINE_SEGMENTS - 1);
-    occupancy[idx] += 1;
+    if (b.kind === "orb") occupancyOrb[idx] += 1;
+    else occupancyBoid[idx] += 1;
   }
 
   for (let i = 0; i < LINE_SEGMENTS; i++) {
-    const activeNow = occupancy[i] > 0;
+    const activeNow = (lineSoundBoidEnabled && occupancyBoid[i] > 0) || (lineSoundOrbEnabled && occupancyOrb[i] > 0);
     if (activeNow && !segmentActiveH[i]) {
       startSegmentSound("H", i); // vertical crossing drives horizontal response
       segmentActiveH[i] = true;
@@ -770,12 +1016,13 @@ function checkVerticalTriggers(activeBoids, lineX) {
   }
 }
 
-function checkHorizontalTriggers(activeBoids, lineY) {
+function checkHorizontalTriggers(actors, lineY) {
   if (!toneStarted || !lineOscillatorsV.length) return;
   const segW = width / LINE_SEGMENTS;
-  const occupancy = Array(LINE_SEGMENTS).fill(0);
+  const occupancyBoid = Array(LINE_SEGMENTS).fill(0);
+  const occupancyOrb = Array(LINE_SEGMENTS).fill(0);
 
-  for (let b of activeBoids) {
+  for (let b of actors) {
     if (!b.prevPos) continue;
     const prevY = b.prevPos.y;
     const currY = b.pos.y;
@@ -790,11 +1037,12 @@ function checkHorizontalTriggers(activeBoids, lineY) {
     const xCross = b.prevPos.x + t * (b.pos.x - b.prevPos.x);
     if (xCross < 0 || xCross > width) continue;
     const idx = constrain(floor(xCross / segW), 0, LINE_SEGMENTS - 1);
-    occupancy[idx] += 1;
+    if (b.kind === "orb") occupancyOrb[idx] += 1;
+    else occupancyBoid[idx] += 1;
   }
 
   for (let i = 0; i < LINE_SEGMENTS; i++) {
-    const activeNow = occupancy[i] > 0;
+    const activeNow = (lineSoundBoidEnabled && occupancyBoid[i] > 0) || (lineSoundOrbEnabled && occupancyOrb[i] > 0);
     if (activeNow && !segmentActiveV[i]) {
       startSegmentSound("V", i); // horizontal crossing drives vertical response
       segmentActiveV[i] = true;
@@ -808,7 +1056,7 @@ function checkHorizontalTriggers(activeBoids, lineY) {
 function startSegmentSound(orientation, idx) {
   const synthArray = orientation === "V" ? lineOscillatorsV : lineOscillatorsH;
   const synth = synthArray[idx];
-  if (!synth || !lineSoundEnabled) return;
+  if (!synth) return;
   const offset = idx - floor(LINE_SEGMENTS / 2);
   const freq = LINE_REF_FREQ * Math.pow(freqRatio, offset);
   synth.oscillator.type = lineWaveform;
@@ -846,13 +1094,13 @@ function updateLineInfoPanel(lineX) {
   if (infoLineYEl) infoLineYEl.textContent = `${Math.round(lineYRatio * height)}`;
   if (infoRatioEl) infoRatioEl.textContent = freqRatio.toFixed(6);
   if (infoPlayingVEl) {
-    const playing = lineSoundEnabled ? segmentActiveV
+    const playing = (lineSoundBoidEnabled || lineSoundOrbEnabled) ? segmentActiveV
       .map((on, idx) => on ? idx + 1 : null)
       .filter(v => v !== null) : [];
     infoPlayingVEl.textContent = playing.length ? playing.join(", ") : "None";
   }
   if (infoPlayingHEl) {
-    const playing = lineSoundEnabled ? segmentActiveH
+    const playing = (lineSoundBoidEnabled || lineSoundOrbEnabled) ? segmentActiveH
       .map((on, idx) => on ? idx + 1 : null)
       .filter(v => v !== null) : [];
     infoPlayingHEl.textContent = playing.length ? playing.join(", ") : "None";
@@ -918,7 +1166,7 @@ function drawClusterBoxes(clusters) {
     let w = constrain(box.maxX - box.minX + pad * 2, 0, width - x);
     let h = constrain(box.maxY - box.minY + pad * 2, 0, height - y);
 
-    stroke(255, 180);
+    stroke(102, 205, 255, 100);
     noFill();
     rect(x, y, w, h, 0);
 

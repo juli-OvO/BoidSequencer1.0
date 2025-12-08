@@ -32,7 +32,19 @@
             <option value="sawtooth">Saw</option>
           </select>
         </label>
-        <button id="line-sound-btn" class="flat-btn">Line Sound: ON</button>
+        <button id="boid-seg-sound-btn" class="flat-btn">Boid on Segments: ON</button>
+        <button id="line-seg-sound-btn" class="flat-btn">Line on Segments: ON</button>
+        <div class="panel-title" style="margin-top:6px;">Orbiters</div>
+        <label class="field">
+          <span>Circles</span>
+          <input type="range" id="orb-count-slider" min="1" max="24" step="1" value="8" />
+        </label>
+        <label class="field">
+          <span>Speed</span>
+          <input type="range" id="orb-speed-slider" min="0.2" max="3" step="0.05" value="1" />
+        </label>
+        <button id="add-line-btn" class="flat-btn">Draw Line</button>
+        <button id="clear-lines-btn" class="flat-btn off">Clear Lines</button>
       </div>
       <div id="top-bar">
         <span class="label">Tempo & Motion Speed</span>
@@ -43,6 +55,7 @@
           <span class="toggle-text">Cluster boxes</span>
         </label>
         <button id="join-btn" class="flat-btn">Join</button>
+        <button id="regroup-btn" class="flat-btn">Regroup</button>
       </div>
       <div id="canvas-wrapper"></div>
       <div id="segment-log" class="panel log-panel">

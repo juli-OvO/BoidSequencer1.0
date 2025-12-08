@@ -65,7 +65,7 @@ canvas {
 #segment-log {
   position: fixed;
   bottom: 32px;
-  left: 24px;
+  right: 24px;
   width: 260px;
   padding: 12px 14px;
 }
@@ -90,7 +90,7 @@ canvas {
 .info-panel {
   position: fixed;
   bottom: 32px;
-  right: 24px;
+  left: 24px;
   width: 260px;
   padding: 12px 14px;
 }
@@ -108,12 +108,12 @@ canvas {
 #top-bar {
   position: fixed;
   top: 24px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 24px;
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
   background: rgba(0, 0, 0, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.35);
   border-radius: 0;
@@ -128,7 +128,7 @@ canvas {
 }
 
 #speed-slider {
-  width: 280px;
+  width: 220px;
   -webkit-appearance: none;
   appearance: none;
   height: 10px;
@@ -151,8 +151,8 @@ canvas {
 #line-panel input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 28px;
+  height: 28px;
   border-radius: 0;
   background: #fff;
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
@@ -161,8 +161,8 @@ canvas {
 
 #speed-slider::-moz-range-thumb,
 #line-panel input[type="range"]::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
+  width: 28px;
+  height: 28px;
   border-radius: 0;
   background: #fff;
   border: none;
@@ -242,11 +242,35 @@ canvas {
   text-transform: uppercase;
   cursor: pointer;
   transition: background 0.2s ease, border 0.2s ease;
+  width: 100%;
+}
+
+.flat-btn.active {
+  border-color: rgba(255, 230, 50, 0.9);
+  color: rgb(255, 230, 50);
 }
 
 .flat-btn.off {
   background: rgba(80, 0, 0, 0.6);
   border-color: rgba(255, 0, 0, 0.6);
+}
+
+.slider-field {
+  position: relative;
+}
+
+.slider-label {
+  position: absolute;
+  top: 75%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #000;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 #bottom-controls {
