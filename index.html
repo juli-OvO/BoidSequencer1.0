@@ -70,11 +70,14 @@
         <div class="info-row"><span>V-Playing</span><span id="info-playing-v">None</span></div>
         <div class="info-row"><span>H-Playing</span><span id="info-playing-h">None</span></div>
       </div>
-      <div id="bottom-controls">
-        <button class="instr-btn" data-type="hihat">Hi-hat /\</button>
-        <button class="instr-btn" data-type="bass">Bass )(</button>
-        <button class="instr-btn" data-type="piano">Piano []</button>
-        <button class="instr-btn" data-type="kick">Kick ()</button>
+      <div id="tutorial-overlay" aria-hidden="false">
+        <div class="tutorial-copy">
+          <div class="tutorial-line"><span class="tutorial-label">Shapes</span> <span class="tutorial-dash">-</span> click to toggle instruments</div>
+          <div class="tutorial-line"><span class="tutorial-label">Space</span> <span class="tutorial-dash">-</span> start / stop</div>
+          <div class="tutorial-line"><span class="tutorial-label">Sliders</span> <span class="tutorial-dash">-</span> experiment freely</div>
+          <div class="tutorial-line tutorial-note">There's no right way to play.</div>
+          <div class="tutorial-hint">Press anywhere to begin</div>
+        </div>
       </div>
     </div>
     <script src="sketch.js"></script>

@@ -56,6 +56,16 @@ let drawingActive = false;
 let sliderLabelMap = [];
 let lineSoundBoidEnabled = true;
 let lineSoundOrbEnabled = true;
+let sequencerPulses = {};
+let lastSequencerStep = 0;
+const SEQUENCER_PULSE_MS = 320;
+let sequencerLayout = null;
+let sequencerPalette = {};
+let sequencerFrameState = null;
+let masterCompressor, masterLimiter;
+let tutorialOverlayEl = null;
+let tutorialOverlayBlocking = true;
+let dismissTutorialOverlayHandler = null;
 
 let toneReverb;
 let hihatSynth, kickSynth, pianoSynth, bassSynth;
@@ -184,13 +194,25 @@ function setup() {
   createInstrumentBoids("kick", 8, homes.kick);
 
   // Tone.js instruments + FX
-  toneReverb = new Tone.Reverb({ decay: 4, preDelay: 0.03, wet: 0.7 }).toDestination();
+  masterCompressor = new Tone.Compressor({
+    threshold: -18,
+    ratio: 3,
+    attack: 0.02,
+    release: 0.18
+  });
+  masterLimiter = new Tone.Limiter(-1).toDestination();
+  toneReverb = new Tone.Reverb({ decay: 4, preDelay: 0.03, wet: 0.7 });
+  toneReverb.connect(masterCompressor);
+  masterCompressor.connect(masterLimiter);
   masterMeter = new Tone.Meter({ smoothing: 0.8 });
-  toneReverb.connect(masterMeter);
+  masterLimiter.connect(masterMeter);
 
   boidBus = new Tone.Gain().connect(toneReverb);
   lineXBus = new Tone.Gain().connect(toneReverb);
   lineYBus = new Tone.Gain().connect(toneReverb);
+  boidBus.gain.value = 0.9;
+  lineXBus.gain.value = 0.5;
+  lineYBus.gain.value = 0.5;
 
   boidMeter = new Tone.Meter({ smoothing: 0.8 });
   lineXMeter = new Tone.Meter({ smoothing: 0.8 });
@@ -201,14 +223,14 @@ function setup() {
 
   hihatSynth = new Tone.NoiseSynth({
     noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.05, sustain: 0.0001, release: 0.02 }
+    envelope: { attack: 0.003, decay: 0.05, sustain: 0.0001, release: 0.03 }
   }).connect(boidBus);
   hihatSynth.volume.value = -12; 
 
   kickSynth = new Tone.MembraneSynth({
     pitchDecay: 0.05,
     octaves: 5,
-    envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.3 }
+    envelope: { attack: 0.003, decay: 0.24, sustain: 0, release: 0.24 }
   }).connect(boidBus);
 
   pianoSynth = new Tone.PolySynth(Tone.Synth, {
@@ -242,22 +264,13 @@ function setup() {
     envelope: { attack: 0.02, decay: 0.3, sustain: 0.4, release: 0.8 },
     filterEnvelope: { attack: 0.30, decay: 0.2, sustain: 0.2, release: 0.6, baseFrequency: 100, octaves: 2 }
   }).connect(boidBus);
+  bassSynth.volume.value = -4;
 
   beatLength = 60000 / bpm;
   initLineOscillators();
-
-  initInstrumentButtons();
-}
-
-function initInstrumentButtons() {
-  document.querySelectorAll(".instr-btn").forEach(btn => {
-    const type = btn.dataset.type;
-    btn.classList.toggle("off", !toggles[type]);
-    btn.addEventListener("click", () => {
-      toggles[type] = !toggles[type];
-      btn.classList.toggle("off", !toggles[type]);
-    });
-  });
+  initSequencerUI();
+  resetSequencerPulses();
+  initTutorialOverlay();
 }
 
 function draw() {
@@ -319,6 +332,8 @@ for (let b of boids) {
     drawClusterBoxes(clusters);
   }
 
+  sequencerFrameState = buildSequencerFrameState();
+
   drawPathsAndOrbs();
   drawSegmentStrips();
   drawHarmonicLines(lineX, lineY);
@@ -342,12 +357,16 @@ for (let b of boids) {
     stepBeat();
   }
 
-  fill(0);
+  drawSequencerPanel();
+
+  fill(255);
   textAlign(CENTER);
-  text("Click boids to toggle | SPACE to play/stop", width / 2, height - 20);
+  const helpY = sequencerLayout ? max(28, sequencerLayout.outerY - 12) : height - 20;
+  text("Click boids to toggle | SPACE to play/stop", width / 2, helpY);
 }
 
 function keyPressed() {
+  if (tutorialOverlayBlocking) return false;
   startAudioIfNeeded();
   if (key === ' ') {
     playing = !playing;
@@ -533,8 +552,14 @@ function positionSliderLabel(input, label, formatter) {
 }
 
 function mousePressed() {
+  if (tutorialOverlayBlocking) return false;
   startAudioIfNeeded();
   combineMorphStart = millis();
+  const toggleHit = getSequencerToggleHit(mouseX, mouseY);
+  if (toggleHit) {
+    toggles[toggleHit] = !toggles[toggleHit];
+    return;
+  }
   if (lineDrawMode) {
     drawingPoints = [createVector(mouseX, mouseY)];
     drawingActive = true;
@@ -562,6 +587,7 @@ function mouseReleased() {
 
 function stepBeat() {
   for (let b of boids) b.flash = false;
+  lastSequencerStep = step;
   if (step === 0) rebuildPianoSchedule();
   playInstrument("hihat", 8);
   playScheduledPiano(step);
@@ -578,6 +604,7 @@ function playInstrument(type, numCols) {
     if (b.on) { // ✅ only active boids
       b.play();
       b.flash = true;
+      recordSequencerPulse(type, b.col);
       for (let i = 0; i < 5; i++) particles.push(new Particle(b.pos.copy(), b.baseColor));
     }
   }
@@ -589,6 +616,7 @@ function playBassChord() {
   for (let b of subset) {
     if (b.on) { // ✅ only active boids
       b.play();
+      recordSequencerPulse("bass", b.col);
       for (let i = 0; i < 6; i++) particles.push(new Particle(b.pos.copy(), b.baseColor));
     }
   }
@@ -622,6 +650,7 @@ function playScheduledPiano(stepIndex) {
     pianoSynth.triggerAttackRelease(entry.freq, dur, undefined, 0.55);
     if (entry.boid) {
       entry.boid.flash = true;
+      recordSequencerPulse("piano", entry.boid.col);
       particles.push(new Particle(entry.boid.pos.copy(), entry.boid.baseColor));
     }
   });
@@ -933,6 +962,309 @@ function drawAmplitudePanels() {
   });
 }
 
+function resetSequencerPulses() {
+  sequencerPulses = {
+    piano: Array(noteFreqs.length).fill(-Infinity),
+    bass: Array(noteFreqs.length).fill(-Infinity),
+    hihat: Array(SIGNATURE_STEPS).fill(-Infinity),
+    kick: Array(SIGNATURE_STEPS).fill(-Infinity)
+  };
+}
+
+function recordSequencerPulse(type, col) {
+  if (!sequencerPulses[type]) return;
+  sequencerPulses[type][col] = millis();
+}
+
+function initSequencerUI() {
+  sequencerPalette = {
+    piano: [255, 214, 92],
+    bass: [105, 220, 255],
+    hihat: [255, 86, 214],
+    kick: [88, 228, 255]
+  };
+  updateSequencerLayout();
+}
+
+function updateSequencerLayout() {
+  const sideSafe = min(324, width * 0.26);
+  const availableW = max(420, width - sideSafe * 2);
+  const outerW = min(max(width * 0.322, 350), availableW * 0.7);
+  const outerH = min(max(height * 0.189, 168), 217);
+  const outerX = (width - outerW) / 2;
+  const outerY = height - outerH - 24;
+  const pad = min(22, outerW * 0.03);
+  const rowGap = min(12, outerH * 0.05);
+  const labelW = min(max(112, outerW * 0.22), 150);
+  const labelGap = min(22, outerW * 0.03);
+  const innerH = outerH - pad * 2;
+  const rowH = (innerH - rowGap * 3) / 4;
+  const stepLeft = outerX + pad + labelW + labelGap;
+  const stepRight = outerX + outerW - pad;
+  const stepW = stepRight - stepLeft;
+  const topY = outerY + pad;
+  const labelH = rowH * 0.78;
+  const rows = ["piano", "bass", "hihat", "kick"].map((type, idx) => {
+    const rowY = topY + idx * (rowH + rowGap);
+    const cellW = stepW / SIGNATURE_STEPS;
+    return {
+      type,
+      labelX: outerX + pad,
+      labelY: rowY + (rowH - labelH) / 2,
+      labelW,
+      labelH,
+      stepLeft,
+      stepRight,
+      centerY: rowY + rowH / 2,
+      cellW,
+      size: min(rowH * 0.82, cellW * 0.68)
+    };
+  });
+
+  sequencerLayout = {
+    outerX, outerY, outerW, outerH,
+    rows: rows.reduce((acc, row) => {
+      acc[row.type] = row;
+      return acc;
+    }, {}),
+    toggles: rows.map(row => ({
+      type: row.type,
+      x: row.labelX,
+      y: row.labelY,
+      w: row.labelW,
+      h: row.labelH
+    }))
+  };
+}
+
+function getSequencerPulse(type, col, now) {
+  if (!sequencerPulses[type]) return 0;
+  const elapsed = now - (sequencerPulses[type][col] || -Infinity);
+  return constrain(1 - elapsed / SEQUENCER_PULSE_MS, 0, 1);
+}
+
+function instrumentLabel(type) {
+  if (type === "kick") return "DRUM";
+  if (type === "hihat") return "HIHAT";
+  return type.toUpperCase();
+}
+
+function initTutorialOverlay() {
+  tutorialOverlayEl = document.getElementById("tutorial-overlay");
+  if (!tutorialOverlayEl) {
+    tutorialOverlayBlocking = false;
+    return;
+  }
+
+  dismissTutorialOverlayHandler = () => dismissTutorialOverlay();
+  tutorialOverlayEl.addEventListener("click", dismissTutorialOverlayHandler);
+  document.addEventListener("keydown", dismissTutorialOverlayHandler);
+  requestAnimationFrame(() => {
+    if (tutorialOverlayEl) tutorialOverlayEl.classList.add("is-visible");
+  });
+}
+
+function dismissTutorialOverlay() {
+  if (!tutorialOverlayEl || tutorialOverlayEl.classList.contains("is-dismissing")) return;
+  startAudioIfNeeded();
+  tutorialOverlayEl.classList.remove("is-visible");
+  tutorialOverlayEl.classList.add("is-dismissing");
+  tutorialOverlayEl.setAttribute("aria-hidden", "true");
+
+  if (dismissTutorialOverlayHandler) {
+    tutorialOverlayEl.removeEventListener("click", dismissTutorialOverlayHandler);
+    document.removeEventListener("keydown", dismissTutorialOverlayHandler);
+    dismissTutorialOverlayHandler = null;
+  }
+
+  window.setTimeout(() => {
+    if (!tutorialOverlayEl) return;
+    tutorialOverlayEl.style.display = "none";
+    tutorialOverlayEl.style.pointerEvents = "none";
+    tutorialOverlayBlocking = false;
+  }, 300);
+}
+
+function getSequencerToggleHit(mx, my) {
+  if (!sequencerLayout) return null;
+  for (let box of sequencerLayout.toggles) {
+    if (mx >= box.x && mx <= box.x + box.w && my >= box.y && my <= box.y + box.h) {
+      return box.type;
+    }
+  }
+  return null;
+}
+
+function buildSequencerFrameState() {
+  const state = {
+    now: millis(),
+    columns: {
+      piano: Array(SIGNATURE_STEPS).fill(false),
+      bass: Array(SIGNATURE_STEPS).fill(false),
+      hihat: Array(SIGNATURE_STEPS).fill(false),
+      kick: Array(SIGNATURE_STEPS).fill(false)
+    }
+  };
+
+  for (let i = 0; i < boids.length; i++) {
+    const boid = boids[i];
+    if (!boid.on) continue;
+    const cols = state.columns[boid.type];
+    if (cols && boid.col < cols.length) cols[boid.col] = true;
+  }
+
+  return state;
+}
+
+function getSequencerScanProgress() {
+  const stepDuration = max(beatLength / 2, 1);
+  const progressWithinStep = playing ? constrain(accum / stepDuration, 0, 0.999) : 0;
+  return (lastSequencerStep + progressWithinStep) / SIGNATURE_STEPS;
+}
+
+function drawSequencerPanel() {
+  if (!sequencerLayout || !sequencerFrameState) return;
+  const layout = sequencerLayout;
+
+  push();
+  strokeJoin(MITER);
+  stroke(255, 245);
+  strokeWeight(2);
+  fill(0, 0, 0, 242);
+  rect(layout.outerX, layout.outerY, layout.outerW, layout.outerH);
+
+  drawSequencerNoteRow("piano", "square");
+  drawSequencerNoteRow("bass", "semi");
+  drawSequencerStepRow("hihat", "triangle");
+  drawSequencerStepRow("kick", "circle");
+  pop();
+}
+
+function drawSequencerToggleBox(box) {
+  push();
+  strokeWeight(2);
+  stroke(255);
+  fill(0, 0, 0, 255);
+  rect(box.x, box.y, box.w, box.h);
+  fill(255);
+  noStroke();
+  textAlign(CENTER, CENTER);
+  textSize(min(18, box.h * 0.4));
+  text(instrumentLabel(box.type), box.x + box.w / 2, box.y + box.h / 2);
+  pop();
+}
+
+function drawSequencerNoteRow(type, shape) {
+  const row = sequencerLayout.rows[type];
+  drawSequencerToggleBox({
+    type,
+    x: row.labelX,
+    y: row.labelY,
+    w: row.labelW,
+    h: row.labelH
+  });
+  const activeCols = sequencerFrameState.columns[type];
+  const accent = sequencerPalette[type];
+  const count = activeCols.length;
+  const now = sequencerFrameState.now;
+
+  for (let i = 0; i < count; i++) {
+    const x = row.stepLeft + row.cellW * (i + 0.5);
+    const pulse = getSequencerPulse(type, i, now);
+    const isOn = activeCols[i];
+
+    push();
+    translate(x, row.centerY);
+    stroke(255);
+    strokeWeight(2);
+    if (isOn) {
+      fill(255);
+      if (shape === "square") rectMode(CENTER);
+    } else {
+      noFill();
+      if (shape === "square") rectMode(CENTER);
+    }
+
+    if (shape === "square") {
+      rect(0, 0, row.size, row.size);
+    } else {
+      arc(0, 0, row.size * 1.35, row.size * 1.35, -HALF_PI, HALF_PI, PIE);
+    }
+
+    if (pulse > 0) {
+      noStroke();
+      fill(accent[0], accent[1], accent[2], 160 * pulse);
+      if (shape === "square") {
+        const pulseSize = row.size + row.size * 0.28 * pulse;
+        rect(0, 0, pulseSize, pulseSize);
+      } else {
+        const pulseSize = row.size * 1.35 + row.size * 0.32 * pulse;
+        arc(0, 0, pulseSize, pulseSize, -HALF_PI, HALF_PI, PIE);
+      }
+      stroke(255);
+      strokeWeight(2);
+      noFill();
+      if (shape === "square") rect(0, 0, row.size, row.size);
+      else arc(0, 0, row.size * 1.35, row.size * 1.35, -HALF_PI, HALF_PI, PIE);
+    }
+    pop();
+  }
+}
+
+function drawSequencerStepRow(type, shape) {
+  const row = sequencerLayout.rows[type];
+  drawSequencerToggleBox({
+    type,
+    x: row.labelX,
+    y: row.labelY,
+    w: row.labelW,
+    h: row.labelH
+  });
+  const activeCols = sequencerFrameState.columns[type];
+  const accent = sequencerPalette[type];
+  const count = activeCols.length;
+  const now = sequencerFrameState.now;
+
+  for (let i = 0; i < count; i++) {
+    const x = row.stepLeft + row.cellW * (i + 0.5);
+    const pulse = getSequencerPulse(type, i, now);
+    const isOn = activeCols[i];
+    const fillAlpha = isOn ? 255 : 0;
+
+    push();
+    translate(x, row.centerY);
+    stroke(255);
+    strokeWeight(2);
+    fill(255, fillAlpha);
+
+    if (shape === "triangle") {
+      triangle(-row.size * 0.65, row.size * 0.55, 0, -row.size * 0.65, row.size * 0.65, row.size * 0.55);
+    } else {
+      ellipse(0, 0, row.size * 1.2);
+    }
+
+    if (pulse > 0) {
+      noStroke();
+      fill(accent[0], accent[1], accent[2], 160 * pulse);
+      if (shape === "triangle") {
+        const s = row.size * (1.05 + 0.22 * pulse);
+        triangle(-s * 0.65, s * 0.55, 0, -s * 0.65, s * 0.65, s * 0.55);
+      } else {
+        ellipse(0, 0, row.size * 1.2 * (1.05 + 0.22 * pulse));
+      }
+      stroke(255);
+      strokeWeight(2);
+      fill(255, fillAlpha);
+      if (shape === "triangle") {
+        triangle(-row.size * 0.65, row.size * 0.55, 0, -row.size * 0.65, row.size * 0.65, row.size * 0.55);
+      } else {
+        ellipse(0, 0, row.size * 1.2);
+      }
+    }
+    pop();
+  }
+}
+
 function drawHarmonicLines(lineX, lineY) {
   const segH = height / LINE_SEGMENTS;
   const segW = width / LINE_SEGMENTS;
@@ -966,11 +1298,11 @@ function initLineOscillators() {
   segmentActiveH = Array(LINE_SEGMENTS).fill(false);
   lineOscillatorsV = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
     oscillator: { type: lineWaveform },
-    envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
+    envelope: { attack: 0.02, decay: 0.06, sustain: 0.35, release: 0.12 }
   }).connect(lineYBus));
   lineOscillatorsH = Array.from({ length: LINE_SEGMENTS }, () => new Tone.Synth({
     oscillator: { type: lineWaveform },
-    envelope: { attack: 0.01, decay: 0.05, sustain: 0.5, release: 0.25 }
+    envelope: { attack: 0.02, decay: 0.06, sustain: 0.35, release: 0.12 }
   }).connect(lineXBus));
 }
 
@@ -1060,7 +1392,7 @@ function startSegmentSound(orientation, idx) {
   const offset = idx - floor(LINE_SEGMENTS / 2);
   const freq = LINE_REF_FREQ * Math.pow(freqRatio, offset);
   synth.oscillator.type = lineWaveform;
-  synth.triggerAttack(freq, undefined, 0.35);
+  synth.triggerAttack(freq, undefined, 0.16);
   addSegmentLog(orientation, idx, freq);
 }
 
@@ -1231,12 +1563,14 @@ function startAudioIfNeeded() {
 }
 
 function touchStarted() {
+  if (tutorialOverlayBlocking) return false;
   startAudioIfNeeded();
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   centerVec.set(windowWidth / 2, windowHeight / 2);
+  updateSequencerLayout();
 }
 
 function lerpAngle(a, b, t) {
