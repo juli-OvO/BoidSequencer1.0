@@ -296,7 +296,6 @@ if (particles.length > 0) {
   lastBgColor = { r, g, b };
 
   updateAmplitudeHistories();
-  drawAmplitudePanels();
 // --- Adjust speed based on slider ---
 let speedFactor = speedSlider ? parseFloat(speedSlider.value) : 1;
 beatLength = 60000 / (bpm * speedFactor);
@@ -538,7 +537,7 @@ function positionSliderLabel(input, label, formatter) {
   const max = parseFloat(input.max || "100");
   const val = parseFloat(input.value || "0");
   const pct = (val - min) / (max - min || 1);
-  const thumb = 28; // match CSS thumb size
+  const thumb = (windowWidth <= 900 || windowHeight <= 760) ? 22 : 28; // match CSS thumb size
   const x = pct * Math.max(0, input.offsetWidth - thumb) + thumb / 2;
   label.style.left = `${x}px`;
   label.textContent = formatter(val);
@@ -1625,6 +1624,7 @@ function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   centerVec.set(windowWidth / 2, windowHeight / 2);
   updateSequencerLayout();
+  sliderLabelMap.forEach(item => positionSliderLabel(item.input, item.label, item.formatter));
 }
 
 function lerpAngle(a, b, t) {
