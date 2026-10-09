@@ -70,13 +70,27 @@
         <div class="info-row"><span>V-Playing</span><span id="info-playing-v">None</span></div>
         <div class="info-row"><span>H-Playing</span><span id="info-playing-h">None</span></div>
       </div>
-      <div id="tutorial-overlay" aria-hidden="false">
-        <div class="tutorial-copy">
-          <div class="tutorial-line"><span class="tutorial-label">Shapes</span> <span class="tutorial-dash">-</span> click to toggle instruments</div>
-          <div class="tutorial-line"><span class="tutorial-label">Space</span> <span class="tutorial-dash">-</span> start / stop</div>
-          <div class="tutorial-line"><span class="tutorial-label">Sliders</span> <span class="tutorial-dash">-</span> experiment freely</div>
-          <div class="tutorial-line tutorial-note">There's no right way to play.</div>
-          <div class="tutorial-hint">Press anywhere to begin</div>
+      <div id="bottom-actions">
+        <button id="play-button" class="flat-btn">Play</button>
+        <button id="tutorial-button" class="flat-btn">Click here for tutorial</button>
+      </div>
+      <div id="tutorial-overlay" aria-hidden="true">
+        <button id="tutorial-close" class="flat-btn" aria-label="Close tutorial">Close</button>
+        <div class="tutorial-panel-box tutorial-left-box"></div>
+        <div class="tutorial-panel-box tutorial-right-box"></div>
+        <div class="tutorial-callout tutorial-left">
+          <div class="tutorial-arrow"></div>
+          <div class="tutorial-box">Use this panel to change the Harmonic Line and draw Orbiters!</div>
+        </div>
+        <div class="tutorial-callout tutorial-right">
+          <div class="tutorial-arrow"></div>
+          <div class="tutorial-box">Use this panel to change speed, boxes, Join, and Regroup!</div>
+        </div>
+        <div class="tutorial-shapes-note">
+          <div class="tutorial-box">All shapes are clickable!
+            <br>
+            Press Play to start or stop the shapes.
+          </div>
         </div>
       </div>
     </div>

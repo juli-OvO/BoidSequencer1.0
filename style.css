@@ -18,87 +18,129 @@ html, body {
 #tutorial-overlay {
   position: fixed;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
+  display: none;
+  background: rgba(0, 0, 0, 0.24);
   z-index: 30;
   opacity: 0;
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(2px);
   pointer-events: auto;
-  transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.2s ease;
 }
 
 #tutorial-overlay.is-visible {
+  display: block;
   opacity: 1;
 }
 
 #tutorial-overlay.is-dismissing {
   opacity: 0;
-  transform: scale(0.98);
   pointer-events: none;
 }
 
-.tutorial-copy {
+#bottom-actions {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  gap: 12px;
+  transform: translateX(-50%);
+  z-index: 14;
+}
+
+#bottom-actions .flat-btn {
+  width: auto;
+  min-width: 160px;
+}
+
+#tutorial-button {
+  min-width: 220px;
+}
+
+#tutorial-close {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: auto;
+  min-width: 110px;
+  z-index: 32;
+}
+
+.tutorial-callout,
+.tutorial-shapes-note,
+.tutorial-panel-box {
+  position: fixed;
+  z-index: 31;
   color: #f5f5f5;
-  text-align: center;
-  transform: translateY(20px);
-  opacity: 0;
-  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.2s, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.2s;
 }
 
-#tutorial-overlay.is-visible .tutorial-copy {
-  opacity: 1;
-  transform: translateY(0);
+.tutorial-panel-box {
+  border: 4px solid #ffe632;
+  box-sizing: border-box;
+  pointer-events: none;
 }
 
-.tutorial-line,
-.tutorial-hint {
-  opacity: 0;
-  transform: translateY(20px);
+.tutorial-callout {
+  width: 250px;
 }
 
-#tutorial-overlay.is-visible .tutorial-line,
-#tutorial-overlay.is-visible .tutorial-hint {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.tutorial-line {
-  font-size: 19px;
-  line-height: 1.8;
-  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.tutorial-line:nth-child(1) { transition-delay: 0.2s; }
-.tutorial-line:nth-child(2) { transition-delay: 0.3s; }
-.tutorial-line:nth-child(3) { transition-delay: 0.4s; }
-.tutorial-note {
-  margin-top: 12px;
-  font-size: 17px;
-  font-style: italic;
-  transition-delay: 0.5s;
-}
-
-.tutorial-label {
-  font-weight: 600;
+.tutorial-box {
+  max-width: 250px;
+  padding: 12px 14px;
+  background: #000;
+  border: 3px solid #ffe632;
   color: #fff;
-}
-
-.tutorial-dash {
-  opacity: 0.75;
-}
-
-.tutorial-hint {
-  margin-top: 40px;
   font-size: 14px;
-  color: #888;
-  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.6s, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.6s;
+  line-height: 1.35;
+  text-transform: none;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
 }
+
+.tutorial-shapes-note {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.tutorial-shapes-note .tutorial-box {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  width: 250px;
+}
+
+.tutorial-arrow {
+  position: absolute;
+  left: 50%;
+  top: -56px;
+  width: 3px;
+  height: 56px;
+  background: #ffe632;
+  transform: translateX(-50%);
+  transform-origin: bottom center;
+}
+
+.tutorial-arrow::before,
+.tutorial-arrow::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  width: 3px;
+  height: 22px;
+  background: #ffe632;
+  transform-origin: top center;
+}
+
+.tutorial-arrow::before {
+  transform: rotate(36deg);
+}
+
+.tutorial-arrow::after {
+  transform: rotate(-36deg);
+}
+
 
 #canvas-wrapper {
   position: fixed;

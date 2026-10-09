@@ -64,7 +64,10 @@ let sequencerPalette = {};
 let sequencerFrameState = null;
 let masterCompressor, masterLimiter;
 let tutorialOverlayEl = null;
-let tutorialOverlayBlocking = true;
+let tutorialButtonEl = null;
+let playButtonEl = null;
+let tutorialCloseEl = null;
+let tutorialOverlayBlocking = false;
 let dismissTutorialOverlayHandler = null;
 
 let toneReverb;
@@ -357,21 +360,11 @@ for (let b of boids) {
     stepBeat();
   }
 
-  drawSequencerPanel();
-
-  fill(255);
-  textAlign(CENTER);
-  const helpY = sequencerLayout ? max(28, sequencerLayout.outerY - 12) : height - 20;
-  text("Click boids to toggle | SPACE to play/stop", width / 2, helpY);
+  updateTutorialTargets();
 }
 
 function keyPressed() {
   if (tutorialOverlayBlocking) return false;
-  startAudioIfNeeded();
-  if (key === ' ') {
-    playing = !playing;
-    accum = 0;
-  }
 }
 
 function drawSegmentStrips() {
@@ -555,11 +548,6 @@ function mousePressed() {
   if (tutorialOverlayBlocking) return false;
   startAudioIfNeeded();
   combineMorphStart = millis();
-  const toggleHit = getSequencerToggleHit(mouseX, mouseY);
-  if (toggleHit) {
-    toggles[toggleHit] = !toggles[toggleHit];
-    return;
-  }
   if (lineDrawMode) {
     drawingPoints = [createVector(mouseX, mouseY)];
     drawingActive = true;
@@ -1051,31 +1039,65 @@ function instrumentLabel(type) {
 
 function initTutorialOverlay() {
   tutorialOverlayEl = document.getElementById("tutorial-overlay");
+  tutorialButtonEl = document.getElementById("tutorial-button");
+  playButtonEl = document.getElementById("play-button");
+  tutorialCloseEl = document.getElementById("tutorial-close");
   if (!tutorialOverlayEl) {
     tutorialOverlayBlocking = false;
     return;
   }
 
-  dismissTutorialOverlayHandler = () => dismissTutorialOverlay();
+  if (tutorialButtonEl) {
+    tutorialButtonEl.addEventListener("click", openTutorialOverlay);
+  }
+  if (playButtonEl) {
+    playButtonEl.addEventListener("click", togglePlaying);
+    updatePlayButton();
+  }
+
+  dismissTutorialOverlayHandler = event => {
+    if (event.type === "keydown" && event.key !== "Escape") return;
+    if (event.type === "click" && event.target !== tutorialOverlayEl && event.target !== tutorialCloseEl) return;
+    dismissTutorialOverlay();
+  };
+
   tutorialOverlayEl.addEventListener("click", dismissTutorialOverlayHandler);
+  if (tutorialCloseEl) tutorialCloseEl.addEventListener("click", dismissTutorialOverlayHandler);
   document.addEventListener("keydown", dismissTutorialOverlayHandler);
+}
+
+function togglePlaying() {
+  startAudioIfNeeded();
+  playing = !playing;
+  accum = 0;
+  updatePlayButton();
+}
+
+function updatePlayButton() {
+  if (!playButtonEl) return;
+  playButtonEl.textContent = playing ? "Stop" : "Play";
+  playButtonEl.classList.toggle("active", playing);
+}
+
+function openTutorialOverlay() {
+  if (!tutorialOverlayEl) return;
+  tutorialOverlayEl.style.display = "block";
+  tutorialOverlayEl.style.pointerEvents = "auto";
+  tutorialOverlayEl.classList.remove("is-dismissing");
+  tutorialOverlayEl.setAttribute("aria-hidden", "false");
+  tutorialOverlayBlocking = true;
+  updateTutorialTargets();
   requestAnimationFrame(() => {
     if (tutorialOverlayEl) tutorialOverlayEl.classList.add("is-visible");
   });
 }
 
 function dismissTutorialOverlay() {
-  if (!tutorialOverlayEl || tutorialOverlayEl.classList.contains("is-dismissing")) return;
+  if (!tutorialOverlayEl || !tutorialOverlayEl.classList.contains("is-visible") || tutorialOverlayEl.classList.contains("is-dismissing")) return;
   startAudioIfNeeded();
   tutorialOverlayEl.classList.remove("is-visible");
   tutorialOverlayEl.classList.add("is-dismissing");
   tutorialOverlayEl.setAttribute("aria-hidden", "true");
-
-  if (dismissTutorialOverlayHandler) {
-    tutorialOverlayEl.removeEventListener("click", dismissTutorialOverlayHandler);
-    document.removeEventListener("keydown", dismissTutorialOverlayHandler);
-    dismissTutorialOverlayHandler = null;
-  }
 
   window.setTimeout(() => {
     if (!tutorialOverlayEl) return;
@@ -1083,6 +1105,42 @@ function dismissTutorialOverlay() {
     tutorialOverlayEl.style.pointerEvents = "none";
     tutorialOverlayBlocking = false;
   }, 300);
+}
+
+function updateTutorialTargets() {
+  if (!tutorialOverlayEl || !tutorialOverlayEl.classList.contains("is-visible")) return;
+
+  const linePanel = document.getElementById("line-panel");
+  const topBar = document.getElementById("top-bar");
+  positionTutorialCallout(".tutorial-left", linePanel);
+  positionTutorialCallout(".tutorial-right", topBar);
+  positionTutorialPanelBox(".tutorial-left-box", linePanel);
+  positionTutorialPanelBox(".tutorial-right-box", topBar);
+
+}
+
+function positionTutorialPanelBox(selector, targetEl) {
+  if (!tutorialOverlayEl || !targetEl) return;
+  const box = tutorialOverlayEl.querySelector(selector);
+  if (!box) return;
+  const rect = targetEl.getBoundingClientRect();
+  const pad = 8;
+  box.style.left = `${rect.left - pad}px`;
+  box.style.top = `${rect.top - pad}px`;
+  box.style.width = `${rect.width + pad * 2}px`;
+  box.style.height = `${rect.height + pad * 2}px`;
+}
+
+function positionTutorialCallout(selector, targetEl) {
+  if (!tutorialOverlayEl || !targetEl) return;
+  const callout = tutorialOverlayEl.querySelector(selector);
+  if (!callout) return;
+  const rect = targetEl.getBoundingClientRect();
+  const calloutW = callout.offsetWidth || 250;
+  const x = constrain(rect.left + rect.width / 2 - calloutW / 2, 16, windowWidth - calloutW - 16);
+  const y = min(rect.bottom + 64, windowHeight - 130);
+  callout.style.left = `${x}px`;
+  callout.style.top = `${y}px`;
 }
 
 function getSequencerToggleHit(mx, my) {
@@ -1128,10 +1186,6 @@ function drawSequencerPanel() {
 
   push();
   strokeJoin(MITER);
-  stroke(255, 245);
-  strokeWeight(2);
-  fill(0, 0, 0, 242);
-  rect(layout.outerX, layout.outerY, layout.outerW, layout.outerH);
 
   drawSequencerNoteRow("piano", "square");
   drawSequencerNoteRow("bass", "semi");
